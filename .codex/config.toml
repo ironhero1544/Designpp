@@ -1,0 +1,14 @@
+model_verbosity = "low"
+model_auto_compact_token_limit_scope = "body_after_prefix"
+project_doc_max_bytes = 32768
+
+[history]
+persistence = "save-all"
+
+[shell_environment_policy]
+inherit = "core"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
+default_subagent_reasoning_effort = "low"

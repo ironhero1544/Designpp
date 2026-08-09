@@ -12,6 +12,10 @@
 #define IDI_DESIGN			107
 #define IDI_SMALL				108
 #define IDC_DESIGN			109
+#define IDM_TOOL_CHECK          32771
+#define IDM_WSL_SETUP           32772
+#define IDM_INSTALL_BASE_TOOLS  32773
+#define IDM_CANCEL_OPERATION    32774
 #define IDC_MYICON				2
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1
@@ -23,7 +27,7 @@
 
 #define _APS_NO_MFC					130
 #define _APS_NEXT_RESOURCE_VALUE	129
-#define _APS_NEXT_COMMAND_VALUE		32771
+#define _APS_NEXT_COMMAND_VALUE		32775
 #define _APS_NEXT_CONTROL_VALUE		1000
 #define _APS_NEXT_SYMED_VALUE		110
 #endif

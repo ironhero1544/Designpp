@@ -13,30 +13,57 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Core">
+      <UniqueIdentifier>{A5F43A57-8EA0-4A6C-B281-74C15CBF11C0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Runtime">
+      <UniqueIdentifier>{9E7CCDD1-6F89-47FB-A21E-1194B79E10E9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="GUI">
+      <UniqueIdentifier>{E52543F2-A8AF-4B23-97CA-4DC8F6551B45}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Application">
+      <UniqueIdentifier>{9F65A6F7-4796-4A69-B12F-5992AE0E21CE}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="framework.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
     <ClInclude Include="targetver.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="Resource.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="Design++.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
+    <ClInclude Include="include\designpp\core\flow.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="include\designpp\core\project.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="include\designpp\runtime\process_runner.h"><Filter>Runtime</Filter></ClInclude>
+    <ClInclude Include="include\designpp\runtime\wsl_executor.h"><Filter>Runtime</Filter></ClInclude>
+    <ClInclude Include="include\designpp\runtime\setup_catalog.h"><Filter>Runtime</Filter></ClInclude>
+    <ClInclude Include="include\designpp\runtime\tool_catalog.h"><Filter>Runtime</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\dpi.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\library_manager_window.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\tool_check_window.h"><Filter>GUI</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Design++.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
+    <ClCompile Include="src\app\main.cc"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="src\core\flow.cc"><Filter>Core</Filter></ClCompile>
+    <ClCompile Include="src\core\project.cc"><Filter>Core</Filter></ClCompile>
+    <ClCompile Include="src\runtime\process_runner.cc"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="src\runtime\wsl_executor.cc"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="src\runtime\setup_catalog.cc"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="src\runtime\tool_catalog.cc"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="src\gui\dpi.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\library_manager_window.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\tool_check_window.cc"><Filter>GUI</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Design++.rc">
       <Filter>리소스 파일</Filter>
     </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="resources\windows\designpp.manifest">
+      <Filter>리소스 파일</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Image Include="small.ico">
