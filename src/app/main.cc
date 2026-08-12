@@ -3,32 +3,11 @@
 // Common Controls requires the base Windows declarations first.
 // clang-format off
 #include <windows.h>
-#include <combaseapi.h>
 #include <commctrl.h>
 // clang-format on
 
 #include "designpp/gui/dpi.h"
 #include "designpp/gui/library_manager_window.h"
-
-namespace {
-
-class ScopedComApartment final {
- public:
-  ScopedComApartment()
-      : result_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
-  ScopedComApartment(const ScopedComApartment&) = delete;
-  ScopedComApartment& operator=(const ScopedComApartment&) = delete;
-  ~ScopedComApartment() {
-    if (SUCCEEDED(result_)) CoUninitialize();
-  }
-
-  [[nodiscard]] bool Initialized() const { return SUCCEEDED(result_); }
-
- private:
-  HRESULT result_ = E_FAIL;
-};
-
-}  // namespace
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance,
                       _In_opt_ HINSTANCE previous_instance,
@@ -36,13 +15,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance,
   UNREFERENCED_PARAMETER(previous_instance);
 
   UNREFERENCED_PARAMETER(command_line);
-
-  ScopedComApartment com_apartment;
-  if (!com_apartment.Initialized()) {
-    MessageBoxW(nullptr, L"COM STA를 초기화할 수 없습니다.", L"Design++",
-                MB_OK | MB_ICONERROR);
-    return 1;
-  }
 
   const bool dpi_awareness_enabled =
       designpp::gui::EnablePerMonitorDpiAwareness();

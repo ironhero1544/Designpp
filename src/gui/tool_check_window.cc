@@ -55,11 +55,11 @@ bool ToolCheckWindow::CreateOrShow(
   }
 
   dpi_ = GetWindowDpi(owner);
-  window_ =
-      CreateWindowExW(0, kWindowClassName, L"Design++ Tool Check",
-                      WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
-                      CW_USEDEFAULT, ScaleForDpi(1040, dpi_),
-                      ScaleForDpi(620, dpi_), owner, nullptr, instance, this);
+  window_ = CreateWindowExW(
+      0, kWindowClassName, L"Design++ Tool Check",
+      WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
+      ScaleForDpi(1040, dpi_), ScaleForDpi(620, dpi_), owner, nullptr,
+      instance, this);
   if (window_ == nullptr) {
     return false;
   }
@@ -159,8 +159,9 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
       // An owned tool window should return focus to its owner when it closes.
       // Preserve an intentionally minimized owner instead of restoring it.
       const HWND owner = owner_;
-      const bool reactivate_owner = owner != nullptr && IsWindow(owner) &&
-                                    IsWindowVisible(owner) && !IsIconic(owner);
+      const bool reactivate_owner =
+          owner != nullptr && IsWindow(owner) && IsWindowVisible(owner) &&
+          !IsIconic(owner);
       DestroyWindow(window_);
       if (reactivate_owner && IsWindow(owner)) {
         ShowWindow(owner, SW_RESTORE);
@@ -187,9 +188,8 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
 bool ToolCheckWindow::CreateControls() {
   description_ = CreateWindowExW(
       0, L"STATIC",
-      L"Windows Runtime과 WSL2 EDA 도구의 설치 상태 및 버전을 확인합니다. "
-      L"모든 실행 로그는 Library Manager에 표시됩니다. 미선택 시 전체 "
-      L"작업입니다.",
+      L"WSL2에서 실행 가능한 EDA 도구와 버전을 확인합니다. 모든 실행 "
+      L"로그는 Library Manager에 표시됩니다. 미선택 시 전체 작업입니다.",
       WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window_, nullptr, instance_, nullptr);
   start_button_ = CreateWindowExW(
       0, L"BUTTON", L"검사 시작", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0,
@@ -285,7 +285,8 @@ void ToolCheckWindow::UpdateActionButtonLabels() const {
   const bool has_selection = SelectedToolIndex().has_value();
   SetWindowTextW(install_button_, has_selection ? L"선택 설치 / 업데이트"
                                                 : L"전체 설치 / 업데이트");
-  SetWindowTextW(remove_button_, has_selection ? L"선택 삭제" : L"전체 삭제");
+  SetWindowTextW(remove_button_,
+                 has_selection ? L"선택 삭제" : L"전체 삭제");
 }
 
 std::optional<std::size_t> ToolCheckWindow::SelectedToolIndex() const {

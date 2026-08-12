@@ -16,14 +16,6 @@ struct ProcessRequest {
   std::filesystem::path executable;
   std::vector<std::wstring> arguments;
   std::optional<std::filesystem::path> working_directory;
-  bool interactive_input = false;
-};
-
-enum class InputWriteResult {
-  kAccepted,
-  kNotInteractive,
-  kClosed,
-  kQueueFull,
 };
 
 // Contains the final state and combined raw output of a child process.
@@ -56,9 +48,6 @@ class ProcessSession final {
 
   // Returns true when this session owns a process implementation.
   [[nodiscard]] bool IsValid() const noexcept;
-
-  // Queues UTF-8 bytes for an interactive child without blocking the caller.
-  [[nodiscard]] InputWriteResult WriteInput(std::string bytes);
 
  private:
   struct Implementation;

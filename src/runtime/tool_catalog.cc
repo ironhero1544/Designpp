@@ -4,8 +4,6 @@
 
 #include <utility>
 
-#include "designpp/runtime/wsl_executor.h"
-
 namespace designpp::runtime {
 namespace {
 
@@ -20,59 +18,17 @@ ToolDefinition MakeTool(ToolId id, std::wstring display_name,
   return ToolDefinition{id,
                         std::move(display_name),
                         std::move(purpose),
-                        WslExecutor::BuildRequest(command),
+                        std::move(command),
                         install_method,
                         std::move(install_hint),
                         required};
-}
-
-ToolDefinition MakeWindowsTool(ToolId id, std::wstring display_name,
-                               std::wstring purpose, ProcessRequest request,
-                               InstallMethod install_method,
-                               std::wstring install_hint,
-                               bool required = true) {
-  return ToolDefinition{id,
-                        std::move(display_name),
-                        std::move(purpose),
-                        std::move(request),
-                        install_method,
-                        std::move(install_hint),
-                        required};
-}
-
-ProcessRequest WebView2ProbeRequest() {
-  ProcessRequest request;
-  request.executable = L"powershell.exe";
-  request.arguments = {
-      L"-NoProfile", L"-NonInteractive", L"-Command",
-      L"[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
-      L"$id='{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; "
-      L"$paths=@("
-      L"('HKLM:\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\'+$id),"
-      L"('HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\'+$id),"
-      L"('HKCU:\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\'+$id),"
-      L"('HKCU:\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\'+$id))"
-      L"; "
-      L"$versions=@($paths | ForEach-Object { "
-      L"if(Test-Path $_){(Get-ItemProperty $_ -ErrorAction "
-      L"SilentlyContinue).pv} "
-      L"} | Where-Object {$_ -and $_ -ne '0.0.0.0'}); "
-      L"if($versions.Count -eq 0){exit 1}; "
-      L"$versions | Sort-Object {[version]$_} -Descending | Select-Object "
-      L"-First 1"};
-  return request;
 }
 
 }  // namespace
 
 std::vector<ToolDefinition> BuildToolCatalog() {
   std::vector<ToolDefinition> tools;
-  tools.reserve(15);
-  tools.push_back(MakeWindowsTool(
-      ToolId::kWebView2, L"Microsoft Edge WebView2 Runtime",
-      L"Monaco HDL editor host", WebView2ProbeRequest(),
-      InstallMethod::kWindowsRuntime,
-      L"Microsoft Evergreen Runtime (shared Windows component)"));
+  tools.reserve(14);
   tools.push_back(MakeTool(ToolId::kVerilator, L"Verilator",
                            L"SystemVerilog lint / simulation", L"verilator",
                            {L"--version"}, InstallMethod::kApt,
@@ -110,10 +66,10 @@ std::vector<ToolDefinition> BuildToolCatalog() {
                            L"Ubuntu package: magic"));
   // Ubuntu's `netgen` package is an unrelated 3D mesh generator. Query the
   // LVS package directly so the probe never starts either tool's GUI.
-  tools.push_back(MakeTool(ToolId::kNetgen, L"Netgen LVS",
-                           L"Layout versus schematic", L"/usr/bin/dpkg-query",
-                           {L"-W", L"-f=${Version}\\n", L"netgen-lvs"},
-                           InstallMethod::kApt, L"Ubuntu package: netgen-lvs"));
+  tools.push_back(MakeTool(
+      ToolId::kNetgen, L"Netgen LVS", L"Layout versus schematic",
+      L"/usr/bin/dpkg-query", {L"-W", L"-f=${Version}\\n", L"netgen-lvs"},
+      InstallMethod::kApt, L"Ubuntu package: netgen-lvs"));
   tools.push_back(MakeTool(ToolId::kKlayout, L"KLayout",
                            L"GDSII / LEF / DEF viewer", L"klayout", {L"-v"},
                            InstallMethod::kApt, L"Ubuntu package: klayout"));
@@ -151,8 +107,6 @@ std::vector<ToolDefinition> BuildToolCatalog() {
 
 std::wstring InstallMethodName(InstallMethod method) {
   switch (method) {
-    case InstallMethod::kWindowsRuntime:
-      return L"Windows Runtime";
     case InstallMethod::kApt:
       return L"APT";
     case InstallMethod::kPythonEnvironment:

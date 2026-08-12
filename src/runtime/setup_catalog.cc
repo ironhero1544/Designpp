@@ -48,26 +48,6 @@ std::wstring AptPackageName(ToolId tool_id) {
   }
 }
 
-SetupStep WebView2InstallStep() {
-  return {
-      L"Microsoft Edge WebView2 Evergreen Runtime 설치 / 복구",
-      MakePowerShellRequest(
-          L"$operation=Join-Path ([IO.Path]::GetTempPath()) "
-          L"('DesignPlusPlus-WebView2-'+[guid]::NewGuid().ToString('N')); "
-          L"$installer=Join-Path $operation 'MicrosoftEdgeWebview2Setup.exe'; "
-          L"New-Item -ItemType Directory -Path $operation -ErrorAction Stop "
-          L"| Out-Null; try { "
-          L"Invoke-WebRequest -UseBasicParsing -Uri "
-          L"'https://go.microsoft.com/fwlink/p/?LinkId=2124703' "
-          L"-OutFile $installer -ErrorAction Stop; "
-          L"$process=Start-Process -FilePath $installer "
-          L"-ArgumentList '/silent','/install' -Wait -PassThru; "
-          L"exit $process.ExitCode } finally { "
-          L"if(Test-Path -LiteralPath $operation){"
-          L"Remove-Item -LiteralPath $operation -Recurse -Force} }"),
-      OutputEncoding::kUtf16LittleEndian, false, true};
-}
-
 }  // namespace
 
 std::vector<SetupStep> BuildWslSetupSteps() {
@@ -164,7 +144,6 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
   steps.push_back({L"OpenROAD Flow Scripts 설치",
                    WslExecutor::BuildRequest(orfs_install),
                    OutputEncoding::kUtf8, false});
-  steps.push_back(WebView2InstallStep());
   return steps;
 }
 
@@ -182,19 +161,17 @@ std::vector<SetupStep> BuildCompleteToolRemoveSteps() {
                    WslExecutor::BuildRequest(managed_files),
                    OutputEncoding::kUtf8, false});
 
-  steps.push_back({L"APT EDA 패키지 전체 삭제",
-                   MakeRootWslRequest(
-                       L"/usr/bin/apt-get",
-                       {L"remove", L"-y", L"verilator", L"iverilog", L"yosys",
-                        L"gtkwave", L"magic", L"netgen-lvs", L"klayout"}),
-                   OutputEncoding::kUtf8, false});
+  steps.push_back({
+      L"APT EDA 패키지 전체 삭제",
+      MakeRootWslRequest(
+          L"/usr/bin/apt-get",
+          {L"remove", L"-y", L"verilator", L"iverilog", L"yosys",
+           L"gtkwave", L"magic", L"netgen-lvs", L"klayout"}),
+      OutputEncoding::kUtf8, false});
   return steps;
 }
 
 std::vector<SetupStep> BuildToolInstallSteps(ToolId tool_id) {
-  if (tool_id == ToolId::kWebView2) {
-    return {WebView2InstallStep()};
-  }
   const std::wstring package = AptPackageName(tool_id);
   if (!package.empty()) {
     return {
