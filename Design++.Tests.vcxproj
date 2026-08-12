@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <ProjectGuid>{7D76D0F9-3AB8-4D0C-90C2-3F383292298D}</ProjectGuid>
+    <RootNamespace>DesignPlusPlusTests</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectSubType>NativeUnitTestProject</ProjectSubType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v145</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp20</LanguageStandard><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>$(ProjectDir)include;$(VCInstallDir)Auxiliary\VS\UnitTest\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(VCInstallDir)Auxiliary\VS\UnitTest\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Microsoft.VisualStudio.TestTools.CppUnitTestFramework.lib;Shell32.lib;Ole32.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\library_tests.cc" />
+    <ClCompile Include="tests\editor_protocol_tests.cc" />
+    <ClCompile Include="tests\file_watch_service_tests.cc" />
+    <ClCompile Include="tests\project_tests.cc" />
+    <ClCompile Include="tests\managed_source_tests.cc" />
+    <ClCompile Include="tests\tool_catalog_tests.cc" />
+    <ClCompile Include="tests\adapter_tests.cc" />
+    <ClCompile Include="tests\simulation_result_parser_tests.cc" />
+    <ClCompile Include="tests\module_scanner_tests.cc" />
+    <ClCompile Include="tests\process_runner_tests.cc" />
+    <ClCompile Include="tests\testbench_execution_service_tests.cc" />
+    <ClCompile Include="tests\synthesis_run_service_tests.cc" />
+    <ClCompile Include="tests\orthogonal_edge_router_tests.cc" />
+    <ClCompile Include="src\core\library.cc" />
+    <ClCompile Include="src\application\editor_protocol.cc" />
+    <ClCompile Include="src\application\library_browser_model.cc" />
+    <ClCompile Include="src\application\library_service.cc" />
+    <ClCompile Include="src\application\managed_source_service.cc" />
+    <ClCompile Include="src\application\project_service.cc" />
+    <ClCompile Include="src\application\run_store.cc" />
+    <ClCompile Include="src\application\module_scanner.cc" />
+    <ClCompile Include="src\application\debug_session_service.cc" />
+    <ClCompile Include="src\application\testbench_execution_service.cc" />
+    <ClCompile Include="src\application\synthesis_run_service.cc" />
+    <ClCompile Include="src\adapters\verilator_adapter.cc" />
+    <ClCompile Include="src\adapters\icarus_simulation_adapter.cc" />
+    <ClCompile Include="src\adapters\simulation_adapter_factory.cc" />
+    <ClCompile Include="src\adapters\verilator_simulation_adapter.cc" />
+    <ClCompile Include="src\adapters\yosys_adapter.cc" />
+    <ClCompile Include="src\adapters\opensta_adapter.cc" />
+    <ClCompile Include="src\adapters\cocotb_runner_adapter.cc" />
+    <ClCompile Include="src\adapters\simulation_result_parser.cc" />
+    <ClCompile Include="src\adapters\icarus_debug_adapter.cc" />
+    <ClCompile Include="src\core\project.cc" />
+    <ClCompile Include="src\gui\orthogonal_edge_router.cc" />
+    <ClCompile Include="src\runtime\path_mapper.cc" />
+    <ClCompile Include="src\runtime\task_scheduler.cc" />
+    <ClCompile Include="src\runtime\process_runner.cc" />
+    <ClCompile Include="src\runtime\execution_provider.cc" />
+    <ClCompile Include="src\runtime\file_watch_service.cc" />
+    <ClCompile Include="src\runtime\resource_coordinator.cc" />
+    <ClCompile Include="src\runtime\setup_catalog.cc" />
+    <ClCompile Include="src\runtime\tool_catalog.cc" />
+    <ClCompile Include="src\runtime\wsl_executor.cc" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

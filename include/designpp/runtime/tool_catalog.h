@@ -6,11 +6,12 @@
 #include <string>
 #include <vector>
 
-#include "designpp/runtime/wsl_executor.h"
+#include "designpp/runtime/process_runner.h"
 
 namespace designpp::runtime {
 
 enum class ToolId {
+  kWebView2,
   kVerilator,
   kIcarusVerilog,
   kCocotb,
@@ -28,6 +29,7 @@ enum class ToolId {
 };
 
 enum class InstallMethod {
+  kWindowsRuntime,
   kApt,
   kPythonEnvironment,
   kManagedFlow,
@@ -39,7 +41,7 @@ struct ToolDefinition {
   ToolId id;
   std::wstring display_name;
   std::wstring purpose;
-  WslCommand probe_command;
+  ProcessRequest probe_request;
   InstallMethod install_method;
   std::wstring install_hint;
   bool required = true;

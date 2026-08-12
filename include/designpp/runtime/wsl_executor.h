@@ -17,6 +17,7 @@ struct WslCommand {
   std::wstring program;
   std::vector<std::wstring> arguments;
   std::vector<std::pair<std::wstring, std::wstring>> environment;
+  bool interactive_input = false;
 };
 
 // Converts structured Linux commands into cancellable wsl.exe processes.
