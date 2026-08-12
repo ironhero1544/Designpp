@@ -51,7 +51,7 @@ GDSII / 리포트
 | 병렬 실행 | CPU token 기반 bounded multicore scheduler |
 | 다중 실행 | 여러 창과 여러 Design++ 프로세스 동시 실행 지원 |
 | 전체 Flow backend | OpenLane 2, ORFS |
-| 프로젝트 파일 | 버전이 있는 `.dpproj` 형식 예정 |
+| 프로젝트 파일 | Cell별 UTF-8 JSON `.dpproj` schema v2 (v1 읽기 호환) |
 | 외부 라이브러리 | 사전 승인 없이 추가하지 않음 |
 
 CMake와 Qt는 사용하지 않는다. GUI는 Windows에서 네이티브로 실행되고 실제
@@ -243,16 +243,17 @@ escaping 책임은 해당 adapter에 둔다.
 
 ## 8. 프로젝트 저장 구조
 
-예정된 사용자 프로젝트 구조는 다음과 같다.
+Cell별 프로젝트 저장 구조는 다음과 같다.
 
 ```text
-project.dpproj
-rtl/
-tb/
-constraints/
-scripts/
-.designpp/
-  runs/
+<library>/cells/<cell-uuid>/
+  project.dpproj
+  views/
+  .designpp/
+    project.writer.lease
+    staging/
+    recovery/
+    runs/
     <run-id>/
       manifest.json
       events.jsonl
@@ -262,9 +263,9 @@ scripts/
       metrics.json
 ```
 
-`.dpproj`에는 schema version을 반드시 기록한다. 사용자 RTL과 생성물을
-분리하고 `.designpp/runs` 아래 run directory는 실행 중에도 순차적으로
-기록한다.
+`.dpproj`에는 schema version과 Library/Cell UUID를 기록한다. 관리 파일은
+`.dplib`가 소유하고 `.dpproj`는 파일별 override만 저장한다. 자세한 형식은
+[PROJECT_FORMAT.md](PROJECT_FORMAT.md)를 참고한다.
 
 초기 버전에서는 별도 데이터베이스를 도입하지 않고 versioned project file과
 run별 manifest를 사용한다. 프로젝트가 커져 검색 성능 문제가 생길 때 SQLite
@@ -367,6 +368,7 @@ Import Wizard 단계:
 - [완료] WSL2/Ubuntu 초기 설정과 설치 단계 전용 권한 상승
 - [완료] APT/cocotb/Nix/OpenLane 2/ORFS 설치·업데이트 pipeline
 - [완료] Tool Check 선택 도구 개별 설치·삭제와 managed dependency 보호
+- [완료] Windows WebView2 Runtime 탐지와 선택 설치·복구
 - [완료] 실시간 설정 로그, 진행률, 취소 UI
 - [완료] Library Manager/Tool Check Per-Monitor V2 high-DPI 대응
 - OpenLane 2, ORFS 설치 경로 설정
@@ -378,57 +380,122 @@ Import Wizard 단계:
 한 화면에서 확인할 수 있고, 동시에 여러 작업이나 GUI를 실행해도 설정된
 CPU budget을 초과하지 않는다.
 
-### Phase 2 — 프로젝트 저장 및 작업 공간
+### Phase 2 — Library 저장 및 프로젝트 작업 공간
 
-- `.dpproj` schema v1
-- New/Open/Save/Save As
-- RTL source 추가와 제거
-- top module, include, define 설정
-- Windows 경로와 WSL 경로 매핑
-- `.designpp/runs` 생성과 run manifest
-- 창별 독립 project context
-- 동일 프로젝트의 cross-process writer lease와 read-only fallback
-- UUID 기반 독립 run directory와 atomic project save
+상태: 완료 (최근 프로젝트 목록과 본문 편집기는 후속 UX 단계)
+
+- [완료] 공용 Library Root 설정과 자동 탐색
+- [완료] `Library → Cell → View` 도메인과 `.dplib` schema v1
+- [완료] Library/Cell/View 생성, 속성 수정, 관리 파일 가져오기와 삭제
+- [완료] atomic manifest 저장, revision 충돌 검사 및 writer lease
+- [완료] 로컬 휴지통 삭제와 UNC 영구 삭제 확인 경계
+- [완료] 비동기 Tree/List 갱신과 Workspace open request 연결
+- [완료] Library/Cell/View 3열 브라우저와 영역별 검색·상태/종류 필터
+- [완료] 검색 exact-match 이동과 미존재 이름의 인라인 생성 요청
+- [완료] `ViewWindow`/factory 기반 top-level 도구 창 수명 관리와 동일 Cell
+  Verilog 창 재사용
+- [완료] `.dpproj` schema v2, v1 migration 및 첫 열기 자동 생성
+- [완료] 명시적 Save/Ctrl+S와 dirty 종료 확인
+- [완료] `.dplib` 기반 Source Set 자동 동기화와 파일별 제외
+- [완료] top module, include, define, parameter, constraint, CPU 설정
+- [완료] Source Set 기반 top module, parameter, include, constraint 기본값 추론
+- [완료] 단일 top module RTL 저장 시 module 이름 기반 파일명 자동 정규화
+- [완료] Windows 경로와 WSL 경로 매핑
+- [완료] `.designpp/runs` 생성과 run manifest
+- [완료] 창별 독립 project context와 session generation
+- [완료] 동일 프로젝트의 cross-process writer lease와 read-only fallback
+- [완료] UUID 기반 독립 run directory와 atomic project save
 - 최근 프로젝트 목록
 
-완료 기준: 앱을 재시작해도 프로젝트와 설정이 동일하게 복원되고, 여러 창과
-여러 프로세스가 같은 프로젝트를 열어도 설정이나 run이 손상되지 않는다.
+완료 기준: 앱을 재시작해도 Library와 프로젝트 설정이 동일하게 복원되고,
+여러 창과 여러 프로세스가 같은 Library/프로젝트를 열어도 설정이나 run이
+손상되지 않는다.
 
 ### Phase 3 — Verilator Lint vertical slice
 
-- `IToolAdapter`/adapter registry
-- Verilator probe와 command generation
-- Lint configuration UI
-- 실시간 로그
-- warning/error parser
-- Problems pane와 source 위치 이동
-- 실행 취소와 재실행
+상태: 첫 vertical slice 완료
+
+- [완료] capability 기반 `ToolAdapter` 경계
+- [완료] Verilator probe, 검증과 구조화 command generation
+- [완료] Lint configuration UI
+- [완료] 실시간 raw log 보존과 Library Manager 미러링
+- [완료] warning/error parser
+- [완료] Problems와 Runs pane
+- [완료] 실행 취소와 재실행
+- [완료] cross-process CPU quota와 Interrupted run 복구
 
 완료 기준: 예제 RTL을 열고 GUI에서 Lint를 실행한 뒤 오류 파일과 줄 번호를
 확인할 수 있다.
 
+### Phase 3.5 — Monaco HDL 편집기
+
+상태: v1 구현 완료
+
+- [완료] WebView2 기반 로컬 Monaco Editor 내장
+- [완료] `.v`, `.vh`, `.sv`, `.svh` 다중 model/tab 편집
+- [완료] Verilog/SystemVerilog Monarch syntax highlighting
+- [완료] undo/redo, find/replace, go-to-line과 model별 view state
+- [완료] 명시적 Save, 직렬 Save All과 dirty 종료 확인
+- [완료] UTF-8/BOM/EOL 보존과 16 MiB 편집 한계
+- [완료] content hash/revision/writer lease 기반 충돌 차단
+- [완료] Workspace 단위 재귀 file watcher와 외부 변경 알림
+- [완료] Verilator marker와 Problems 위치 이동
+- [완료] local virtual host, CSP와 versioned JSON protocol
+- [완료] WebView2 Runtime 실패 시 Workspace 기능 유지
+- [완료] 앱 COM STA 초기화와 WebView2 실패 HRESULT 진단
+
+후속 범위는 HDL LSP/IntelliSense, symbol navigation, formatting provider,
+Git, terminal, Monaco source breakpoint 및 VS Code extension compatibility다.
+
 ### Phase 4 — RTL Simulation
 
-- Verilator simulation
-- Icarus 선택 backend
-- cocotb runner
-- test configuration 관리
-- VCD/FST artifact 등록
+- [진행 중] Icarus Testbench 실행 (`iverilog` → `vvp`)
+- [완료] 활성 Testbench 탭 기반 실행 Inspector
+- [완료] 파일별 Testbench Top/VCD 설정과 `.dpproj` schema v2
+- [완료] VCD artifact 등록과 GTKWave 수동 실행
+- [완료] VVP 대화형 디버거의 시작 정지, Continue, event Step, Finish
+- [완료] Debug scope/variable console과 `$stop` Monaco 위치 이동
+- [완료] bounded interactive stdin과 Debug run/VCD 기록
+- [완료] Run/Debug execution provider와 generation-safe terminal delivery
+- [완료] 별도 WSL Icarus/VCD/WSLg/cancellation integration test gate
+- [진행 중] Verilator simulation (adapter와 VCD/FST plan 완료, Workspace 연결 필요)
+- [진행 중] cocotb runner (structured plan과 xUnit parser 완료, Workspace 연결 필요)
+- [진행 중] test configuration 관리 (`.dpproj` schema v3 계약 완료, UI 필요)
+- [진행 중] VCD/FST artifact 등록 (adapter 생성 계약 완료, UI 선택 필요)
 - GTKWave 실행
 - simulation 성공/실패와 test summary
+
+대화형 디버거 v1은 `vvp -i -s`와 Testbench의 `$stop`을 사용한다. 일반 Run은
+`vvp -N`으로 `$stop`을 실패 종료로 처리한다. Monaco breakpoint, 실행 중 임의
+Pause, statement 단위 stepping과 persistent Watch는 후속 범위다.
 
 완료 기준: GUI에서 테스트를 실행하고 생성된 waveform을 GTKWave로 열 수
 있다.
 
 ### Phase 5 — Standalone Synthesis/STA
 
-- Yosys adapter
-- synthesis script 생성과 command preview
-- netlist/report artifact
-- cell count/area parser
-- OpenSTA adapter
-- SDC/Liberty corner 설정
-- WNS/TNS 및 violation browser
+- [완료] Yosys adapter와 비동기 `SynthesisRunService` (probe, enabled RTL/top
+  검증, CPU quota, script, Run/Cancel, artifact/statistics 판정, exactly-once
+  completion) 및 전용 `SynthesisWindow` 연결
+- [완료] Monaco 기반 `VerilogWindow`와 비-Monaco `SynthesisWindow` top-level
+  클래스 분리, 공통 `ViewWindowFactory` 라우팅
+- [완료] synthesis script, JSON/Verilog netlist, statistics/report와 summary
+  artifact 보존 및 상단 Script/Reports/Artifacts 표시
+- [완료] 공백/한글 Library 경로를 위한 run UUID별 Yosys ASCII-safe staging과
+  Windows-side artifact 보존
+- [완료] cell count/area parser와 전용 Reports 표시
+- [완료] Yosys JSON netlist 기반 gate-level schematic 캔버스, 표준 기본
+  IEEE distinctive-shape gate 심볼, 추론된 조합 선택 논리의 기본 게이트
+  lowering, net dependency depth 기반 좌→우 진행 및 동일 level 게이트의
+  고정 X/세로 열 배치, 양방향 barycenter ordering과 통합 cost 기반
+  orthogonal edge routing, 수평/수직 심볼 회피 및 dogleg, bit별 bus terminal,
+  median pseudo-Steiner trunk/분기 배선과 비접속 crossing bridge,
+  커서 중심 확대, fit-to-window와 pan 기반 대형
+  설계 탐색, red square terminal/blue round junction 전용 의미 색상 체계,
+  2-input primitive 약 1.2:1 body 비율
+- [진행 중] OpenSTA adapter (probe/validation/plan 완료, 실행 연결 필요)
+- SDC/Liberty corner 설정 UI와 persistence
+- [진행 중] WNS/TNS 및 violation parser (기본 parser 완료, browser 필요)
 
 완료 기준: RTL에서 netlist를 생성하고 timing 결과를 GUI에서 비교할 수 있다.
 
@@ -484,6 +551,7 @@ Design++에서 탐색할 수 있다.
 | v0.1 | 현재 Win32/WSL2 foundation |
 | v0.2 | 프로젝트 저장과 Toolchain Doctor |
 | v0.3 | Verilator Lint |
+| v0.35 | Monaco HDL 편집기와 진단 연결 |
 | v0.4 | RTL Simulation, cocotb, GTKWave |
 | v0.5 | Yosys와 OpenSTA |
 | v0.7 | OpenLane 2 Full Flow |

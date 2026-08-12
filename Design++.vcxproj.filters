@@ -25,6 +25,12 @@
     <Filter Include="Application">
       <UniqueIdentifier>{9F65A6F7-4796-4A69-B12F-5992AE0E21CE}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Application Services">
+      <UniqueIdentifier>{D4704317-5198-4FCB-9A92-A1E092E594D1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Adapters">
+      <UniqueIdentifier>{E18225C0-9E1A-45E8-BAC7-C5D73BA8D932}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="targetver.h">
@@ -33,27 +39,94 @@
     <ClInclude Include="Resource.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
-    <ClInclude Include="include\designpp\core\flow.h"><Filter>Core</Filter></ClInclude>
+  <ClInclude Include="include\designpp\core\flow.h"><Filter>Core</Filter></ClInclude>
+  <ClInclude Include="include\designpp\core\diagnostic.h"><Filter>Core</Filter></ClInclude>
     <ClInclude Include="include\designpp\core\project.h"><Filter>Core</Filter></ClInclude>
-    <ClInclude Include="include\designpp\runtime\process_runner.h"><Filter>Runtime</Filter></ClInclude>
+    <ClInclude Include="include\designpp\core\library.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="include\designpp\core\status.h"><Filter>Core</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\library_service.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\editor_protocol.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\managed_source_service.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\project_service.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\run_store.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\module_scanner.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\workspace.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\debug_session_service.h"><Filter>Application Services</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\tool_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\simulation_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\simulation_adapter_factory.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\simulation_result_parser.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\icarus_simulation_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\verilator_simulation_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\yosys_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\opensta_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\cocotb_runner_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\interactive_debug_adapter.h"><Filter>Adapters</Filter></ClInclude>
+    <ClInclude Include="include\designpp\adapters\icarus_debug_adapter.h"><Filter>Adapters</Filter></ClInclude>
+  <ClInclude Include="include\designpp\adapters\verilator_adapter.h"><Filter>Adapters</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\library_browser_model.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\application\synthesis_run_service.h"><Filter>Application Services</Filter></ClInclude>
+  <ClInclude Include="include\designpp\runtime\process_runner.h"><Filter>Runtime</Filter></ClInclude>
+  <ClInclude Include="include\designpp\runtime\path_mapper.h"><Filter>Runtime</Filter></ClInclude>
+  <ClInclude Include="include\designpp\runtime\file_watch_service.h"><Filter>Runtime</Filter></ClInclude>
+  <ClInclude Include="include\designpp\runtime\resource_coordinator.h"><Filter>Runtime</Filter></ClInclude>
     <ClInclude Include="include\designpp\runtime\wsl_executor.h"><Filter>Runtime</Filter></ClInclude>
     <ClInclude Include="include\designpp\runtime\setup_catalog.h"><Filter>Runtime</Filter></ClInclude>
     <ClInclude Include="include\designpp\runtime\tool_catalog.h"><Filter>Runtime</Filter></ClInclude>
+    <ClInclude Include="include\designpp\runtime\task_scheduler.h"><Filter>Runtime</Filter></ClInclude>
     <ClInclude Include="include\designpp\gui\dpi.h"><Filter>GUI</Filter></ClInclude>
     <ClInclude Include="include\designpp\gui\library_manager_window.h"><Filter>GUI</Filter></ClInclude>
-    <ClInclude Include="include\designpp\gui\tool_check_window.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\monaco_editor_host.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\gate_schematic_canvas.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\orthogonal_edge_router.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\synthesis_window.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\view_window.h"><Filter>GUI</Filter></ClInclude>
+    <ClInclude Include="include\designpp\gui\view_window_factory.h"><Filter>GUI</Filter></ClInclude>
+  <ClInclude Include="include\designpp\gui\tool_check_window.h"><Filter>GUI</Filter></ClInclude>
+  <ClInclude Include="include\designpp\gui\workspace_registry.h"><Filter>GUI</Filter></ClInclude>
+  <ClInclude Include="include\designpp\gui\verilog_window.h"><Filter>GUI</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\app\main.cc"><Filter>Application</Filter></ClCompile>
+  <ClCompile Include="src\app\main.cc"><Filter>Application</Filter></ClCompile>
+    <ClCompile Include="src\adapters\verilator_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\icarus_simulation_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\simulation_adapter_factory.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\verilator_simulation_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\yosys_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\opensta_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\cocotb_runner_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\simulation_result_parser.cc"><Filter>Adapters</Filter></ClCompile>
+    <ClCompile Include="src\adapters\icarus_debug_adapter.cc"><Filter>Adapters</Filter></ClCompile>
+  <ClCompile Include="src\application\library_service.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\editor_protocol.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\managed_source_service.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\project_service.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\run_store.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\module_scanner.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\debug_session_service.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\library_browser_model.cc"><Filter>Application Services</Filter></ClCompile>
+  <ClCompile Include="src\application\synthesis_run_service.cc"><Filter>Application Services</Filter></ClCompile>
     <ClCompile Include="src\core\flow.cc"><Filter>Core</Filter></ClCompile>
+    <ClCompile Include="src\core\library.cc"><Filter>Core</Filter></ClCompile>
     <ClCompile Include="src\core\project.cc"><Filter>Core</Filter></ClCompile>
-    <ClCompile Include="src\runtime\process_runner.cc"><Filter>Runtime</Filter></ClCompile>
+  <ClCompile Include="src\runtime\process_runner.cc"><Filter>Runtime</Filter></ClCompile>
+  <ClCompile Include="src\runtime\path_mapper.cc"><Filter>Runtime</Filter></ClCompile>
+  <ClCompile Include="src\runtime\file_watch_service.cc"><Filter>Runtime</Filter></ClCompile>
+  <ClCompile Include="src\runtime\resource_coordinator.cc"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="src\runtime\wsl_executor.cc"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="src\runtime\setup_catalog.cc"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="src\runtime\tool_catalog.cc"><Filter>Runtime</Filter></ClCompile>
+    <ClCompile Include="src\runtime\task_scheduler.cc"><Filter>Runtime</Filter></ClCompile>
     <ClCompile Include="src\gui\dpi.cc"><Filter>GUI</Filter></ClCompile>
     <ClCompile Include="src\gui\library_manager_window.cc"><Filter>GUI</Filter></ClCompile>
-    <ClCompile Include="src\gui\tool_check_window.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\monaco_editor_host.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\gate_schematic_canvas.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\orthogonal_edge_router.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\synthesis_window.cc"><Filter>GUI</Filter></ClCompile>
+    <ClCompile Include="src\gui\view_window_factory.cc"><Filter>GUI</Filter></ClCompile>
+  <ClCompile Include="src\gui\tool_check_window.cc"><Filter>GUI</Filter></ClCompile>
+  <ClCompile Include="src\gui\workspace_registry.cc"><Filter>GUI</Filter></ClCompile>
+  <ClCompile Include="src\gui\verilog_window.cc"><Filter>GUI</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Design++.rc">
