@@ -4,4 +4,6 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="Design++.vcxproj" Id="ab801f54-6c17-43b1-99cc-7379c3b2592b" />
+  <Project Path="Design++.Tests.vcxproj" Id="7d76d0f9-3ab8-4d0c-90c2-3f383292298d" />
+  <Project Path="Design++.WslIntegrationTests.vcxproj" Id="c7e46127-58f2-452d-99ab-5a98f9950b46" />
 </Solution>

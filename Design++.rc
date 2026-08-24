@@ -39,11 +39,30 @@ IDC_DESIGN MENU
 BEGIN
     POPUP "파일(&F)"
     BEGIN
+        MENUITEM "새 Library...",            IDM_NEW_LIBRARY
+        MENUITEM "Library Root 설정...",     IDM_LIBRARY_ROOT
+        MENUITEM "새로 고침",                 IDM_LIBRARY_REFRESH
+        POPUP "최근 Workspace"
+        BEGIN
+            MENUITEM "(없음)",                 IDM_RECENT_EMPTY, GRAYED
+        END
+        MENUITEM SEPARATOR
         MENUITEM "끝내기(&X)",                IDM_EXIT
+    END
+    POPUP "편집(&E)"
+    BEGIN
+        MENUITEM "새 Cell...",               IDM_NEW_CELL
+        MENUITEM "새 View...",               IDM_NEW_VIEW
+        MENUITEM "파일 가져오기...",          IDM_IMPORT_FILES
+        MENUITEM "Liberty 파일 관리...",      IDM_MANAGE_LIBERTY
+        MENUITEM SEPARATOR
+        MENUITEM "속성...",                   IDM_LIBRARY_PROPERTIES
+        MENUITEM "삭제",                      IDM_LIBRARY_DELETE
     END
     POPUP "도구(&T)"
     BEGIN
         MENUITEM "Tool Check...",             IDM_TOOL_CHECK
+        MENUITEM "Toolchain Doctor...",       IDM_TOOLCHAIN_DOCTOR
         MENUITEM SEPARATOR
         MENUITEM "WSL2 Setup...",             IDM_WSL_SETUP
         MENUITEM "Install / Update Toolchain...", IDM_INSTALL_BASE_TOOLS
@@ -83,6 +102,21 @@ BEGIN
     LTEXT           "Design++, 버전 1.0",IDC_STATIC,42,14,114,8,SS_NOPREFIX
     LTEXT           "Copyright (C) 2026",IDC_STATIC,42,26,114,8
     DEFPUSHBUTTON   "확인",IDOK,113,41,50,14,WS_GROUP
+END
+
+IDD_LIBRARY_ITEM DIALOGEX 0, 0, 285, 142
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Library 항목"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "이름",IDC_STATIC,10,12,48,10
+    EDITTEXT        IDC_ITEM_NAME,62,10,210,14,ES_AUTOHSCROLL
+    LTEXT           "종류",IDC_STATIC,10,36,48,10
+    COMBOBOX        IDC_VIEW_KIND,62,34,210,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "설명",IDC_STATIC,10,60,48,10
+    EDITTEXT        IDC_ITEM_DESCRIPTION,62,58,210,48,ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL
+    DEFPUSHBUTTON   "확인",IDOK,166,118,50,14
+    PUSHBUTTON      "취소",IDCANCEL,222,118,50,14
 END
 
 /////////////////////////////////////////////////////////////////////////////

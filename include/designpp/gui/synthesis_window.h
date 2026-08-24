@@ -1,0 +1,148 @@
+// Copyright 2026 The Design++ Authors
+
+#ifndef DESIGNPP_GUI_SYNTHESIS_WINDOW_H_
+#define DESIGNPP_GUI_SYNTHESIS_WINDOW_H_
+
+#include <windows.h>
+
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "designpp/application/library_service.h"
+#include "designpp/application/project_service.h"
+#include "designpp/application/run_store.h"
+#include "designpp/application/synthesis_run_service.h"
+#include "designpp/application/workspace.h"
+#include "designpp/core/diagnostic.h"
+#include "designpp/gui/dpi.h"
+#include "designpp/gui/gate_schematic_canvas.h"
+#include "designpp/gui/schematic_build_service.h"
+#include "designpp/gui/view_window.h"
+#include "designpp/runtime/execution_provider.h"
+#include "designpp/runtime/task_scheduler.h"
+
+namespace designpp::gui {
+
+class SynthesisWindow final : public ViewWindow {
+ public:
+  SynthesisWindow() = default;
+  SynthesisWindow(const SynthesisWindow&) = delete;
+  SynthesisWindow& operator=(const SynthesisWindow&) = delete;
+  ~SynthesisWindow() override;
+
+  [[nodiscard]] bool Create(HINSTANCE instance,
+                            const application::WorkspaceOpenRequest& request,
+                            application::LibraryRecord library,
+                            ViewWindowLogCallback central_log,
+                            ViewWindowLibraryChangedCallback library_changed);
+
+  [[nodiscard]] ViewWindowKind Kind() const noexcept override;
+  [[nodiscard]] bool CanActivate(
+      const application::WorkspaceOpenRequest& request,
+      core::ViewKind view_kind) const override;
+  void Activate(const application::WorkspaceOpenRequest& request) override;
+  [[nodiscard]] bool BelongsToLibrary(
+      std::string_view library_id) const override;
+  [[nodiscard]] bool MatchesCell(std::string_view library_id,
+                                 std::string_view cell_id) const override;
+  [[nodiscard]] bool IsOpen() const noexcept override;
+  void RefreshLibrary(application::LibraryRecord library) override;
+  [[nodiscard]] bool PrepareClose() override;
+  void Close() override;
+  [[nodiscard]] bool TranslateAccelerator(const MSG& message) override;
+
+ private:
+  struct EventChannel;
+  static constexpr UINT kEventMessage = WM_APP + 61;
+
+  static LRESULT CALLBACK WindowProcedure(HWND window, UINT message,
+                                          WPARAM wparam, LPARAM lparam);
+  LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
+  [[nodiscard]] bool CreateControls();
+  void LayoutControls(int width, int height);
+  void BeginLoad();
+  void HandleEvents();
+  void PopulateSynthesisConfiguration();
+  void StartSynthesis();
+  void ApplyState(application::SynthesisRunState state);
+  void AppendOutput(std::wstring_view text);
+  void ShowProblems();
+  void ShowRuns();
+  void ShowReports();
+  void ShowArtifacts();
+  void ShowScript();
+  void UpdateCanvas();
+  void StartSceneBuild();
+  void NavigateToModule(std::string_view module_name);
+  void NavigateBack();
+  void BeginModuleLoad(std::string module_name, bool add_history);
+  void ShutdownChannel();
+  void PopulateIdentity();
+
+  HINSTANCE instance_ = nullptr;
+  HWND window_ = nullptr;
+  HWND identity_ = nullptr;
+  HWND run_button_ = nullptr;
+  HWND cancel_button_ = nullptr;
+  HWND reports_button_ = nullptr;
+  HWND artifacts_button_ = nullptr;
+  HWND script_button_ = nullptr;
+  HWND view_selector_ = nullptr;
+  HWND navigator_ = nullptr;
+  GateSchematicCanvas canvas_;
+  HWND properties_ = nullptr;
+  HWND flatten_checkbox_ = nullptr;
+  HWND liberty_label_ = nullptr;
+  HWND liberty_list_ = nullptr;
+  HWND bottom_tabs_ = nullptr;
+  HWND output_ = nullptr;
+  HWND status_ = nullptr;
+  UINT dpi_ = kDefaultDpi;
+  UniqueFont font_;
+
+  application::WorkspaceOpenRequest request_;
+  application::LibraryRecord library_;
+  application::ProjectService project_service_{};
+  std::unique_ptr<application::ProjectDocument> document_;
+  std::vector<application::ResolvedSource> sources_;
+  std::vector<const application::ResolvedSource*> liberty_candidates_;
+  std::vector<application::RunRecord> runs_;
+  std::vector<core::Diagnostic> diagnostics_;
+  std::shared_ptr<application::RunRecord> active_run_;
+  adapters::SynthesisMetrics metrics_;
+  core::SchematicModel gate_schematic_;
+  core::SchematicModel readable_schematic_;
+  core::Status readable_schematic_status_;
+  std::shared_ptr<const SchematicScene> gate_scene_;
+  std::shared_ptr<const SchematicScene> readable_scene_;
+  std::map<std::string, core::SchematicModel> gate_module_cache_;
+  std::map<std::string, core::SchematicModel> readable_module_cache_;
+  std::map<std::string, std::shared_ptr<const SchematicScene>>
+      gate_scene_cache_;
+  std::map<std::string, std::shared_ptr<const SchematicScene>>
+      readable_scene_cache_;
+  std::vector<std::string> module_history_;
+  std::string active_module_;
+  std::uint64_t module_load_generation_ = 0;
+  SchematicViewMode selected_view_mode_ = SchematicViewMode::kReadable;
+  SchematicBuildService schematic_build_service_;
+  std::uint64_t schematic_generation_ = 1;
+  bool schematic_build_active_ = false;
+  std::string script_text_;
+  runtime::WslExecutionProvider execution_provider_;
+  application::SynthesisRunService synthesis_service_{&execution_provider_};
+  runtime::TaskScheduler scheduler_{1};
+  std::shared_ptr<EventChannel> event_channel_;
+  ViewWindowLogCallback central_log_;
+  ViewWindowLibraryChangedCallback library_changed_;
+  std::uint64_t generation_ = 1;
+};
+
+}  // namespace designpp::gui
+
+#endif  // DESIGNPP_GUI_SYNTHESIS_WINDOW_H_

@@ -8,9 +8,12 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace designpp::runtime {
 namespace {
@@ -114,7 +117,7 @@ class UniqueHandle final {
     return executable.wstring();
   }
 
-  std::array<wchar_t, 32768> resolved{};
+  std::vector<wchar_t> resolved(32768);
   const std::wstring name = executable.wstring();
   const DWORD length = SearchPathW(nullptr, name.c_str(), nullptr,
                                    static_cast<DWORD>(resolved.size()),
@@ -144,12 +147,22 @@ class UniqueHandle final {
 }  // namespace
 
 struct ProcessSession::Implementation final {
+  static constexpr std::size_t kMaximumQueuedInputBytes = 64 * 1024;
+
   std::mutex handles_mutex;
   UniqueHandle job;
   UniqueHandle process;
+  std::mutex input_mutex;
+  std::condition_variable_any input_ready;
+  std::deque<std::string> input_queue;
+  std::size_t queued_input_bytes = 0;
+  UniqueHandle input_write;
+  std::jthread input_worker;
   std::jthread worker;
   std::atomic_bool cancel_requested{false};
   std::atomic_bool running{true};
+  bool interactive_input = false;
+  bool input_closed = true;
 };
 
 ProcessSession::ProcessSession(std::shared_ptr<Implementation> implementation)
@@ -173,6 +186,13 @@ void ProcessSession::Cancel() noexcept {
   }
 
   implementation_->cancel_requested.store(true);
+  {
+    std::scoped_lock input_lock(implementation_->input_mutex);
+    implementation_->input_closed = true;
+    implementation_->input_queue.clear();
+    implementation_->queued_input_bytes = 0;
+  }
+  implementation_->input_ready.notify_all();
   std::scoped_lock lock(implementation_->handles_mutex);
   if (implementation_->job.valid()) {
     TerminateJobObject(implementation_->job.get(), ERROR_CANCELLED);
@@ -187,6 +207,26 @@ bool ProcessSession::IsRunning() const noexcept {
 
 bool ProcessSession::IsValid() const noexcept {
   return implementation_ != nullptr;
+}
+
+InputWriteResult ProcessSession::WriteInput(std::string bytes) {
+  if (!implementation_ || !implementation_->interactive_input) {
+    return InputWriteResult::kNotInteractive;
+  }
+  if (bytes.empty()) return InputWriteResult::kAccepted;
+  std::scoped_lock lock(implementation_->input_mutex);
+  if (implementation_->input_closed || !implementation_->running.load()) {
+    return InputWriteResult::kClosed;
+  }
+  if (bytes.size() > Implementation::kMaximumQueuedInputBytes ||
+      implementation_->queued_input_bytes >
+          Implementation::kMaximumQueuedInputBytes - bytes.size()) {
+    return InputWriteResult::kQueueFull;
+  }
+  implementation_->queued_input_bytes += bytes.size();
+  implementation_->input_queue.push_back(std::move(bytes));
+  implementation_->input_ready.notify_one();
+  return InputWriteResult::kAccepted;
 }
 
 void ProcessSession::StopAndJoin() noexcept {
@@ -208,6 +248,8 @@ ProcessLaunchResult ProcessRunner::RunAsync(ProcessRequest request,
   }
 
   auto implementation = std::make_shared<ProcessSession::Implementation>();
+  implementation->interactive_input = request.interactive_input;
+  implementation->input_closed = !request.interactive_input;
   auto* const state = implementation.get();
 
   implementation->worker = std::jthread([state, request = std::move(request),
@@ -217,6 +259,7 @@ ProcessLaunchResult ProcessRunner::RunAsync(ProcessRequest request,
     ProcessResult result;
     UniqueHandle output_read;
     UniqueHandle output_write;
+    UniqueHandle input_read;
 
     SECURITY_ATTRIBUTES security_attributes{};
     security_attributes.nLength = sizeof(security_attributes);
@@ -234,21 +277,73 @@ ProcessLaunchResult ProcessRunner::RunAsync(ProcessRequest request,
     }
     output_read.Reset(raw_read);
     output_write.Reset(raw_write);
-    SetHandleInformation(output_read.get(), HANDLE_FLAG_INHERIT, 0);
+    if (!SetHandleInformation(output_read.get(), HANDLE_FLAG_INHERIT, 0)) {
+      result.error_message = FormatWindowsError(GetLastError());
+      state->running.store(false);
+      if (on_complete) on_complete(std::move(result));
+      return;
+    }
+
+    if (request.interactive_input) {
+      raw_read = nullptr;
+      raw_write = nullptr;
+      if (!CreatePipe(&raw_read, &raw_write, &security_attributes, 0)) {
+        result.error_message = FormatWindowsError(GetLastError());
+        state->running.store(false);
+        if (on_complete) on_complete(std::move(result));
+        return;
+      }
+      input_read.Reset(raw_read);
+      {
+        std::scoped_lock lock(state->input_mutex);
+        state->input_write.Reset(raw_write);
+      }
+      if (!SetHandleInformation(state->input_write.get(), HANDLE_FLAG_INHERIT,
+                                0)) {
+        result.error_message = FormatWindowsError(GetLastError());
+        {
+          std::scoped_lock lock(state->input_mutex);
+          state->input_closed = true;
+          state->input_write.Reset();
+        }
+        state->running.store(false);
+        if (on_complete) on_complete(std::move(result));
+        return;
+      }
+    } else {
+      input_read.Reset(CreateFileW(
+          L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+          &security_attributes, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+      if (!input_read.valid()) {
+        result.error_message = FormatWindowsError(GetLastError());
+        state->running.store(false);
+        if (on_complete) on_complete(std::move(result));
+        return;
+      }
+    }
 
     UniqueHandle job(CreateJobObjectW(nullptr, nullptr));
-    if (job.valid()) {
-      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-      limits.BasicLimitInformation.LimitFlags =
-          JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-      SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
-                              &limits, sizeof(limits));
+    if (!job.valid()) {
+      result.error_message = FormatWindowsError(GetLastError());
+      state->running.store(false);
+      if (on_complete) on_complete(std::move(result));
+      return;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
+                                 &limits, sizeof(limits))) {
+      result.error_message = FormatWindowsError(GetLastError());
+      state->running.store(false);
+      if (on_complete) on_complete(std::move(result));
+      return;
     }
 
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdInput = input_read.get();
     startup.hStdOutput = output_write.get();
     startup.hStdError = output_write.get();
 
@@ -261,7 +356,8 @@ ProcessLaunchResult ProcessRunner::RunAsync(ProcessRequest request,
 
     const BOOL created = CreateProcessW(
         executable.c_str(), command_line.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+        nullptr,
         working_directory.empty() ? nullptr : working_directory.c_str(),
         &startup, &process_information);
     if (!created) {
@@ -274,26 +370,77 @@ ProcessLaunchResult ProcessRunner::RunAsync(ProcessRequest request,
     }
 
     result.started = true;
+    input_read.Reset();
     UniqueHandle thread_handle(process_information.hThread);
     UniqueHandle process_handle(process_information.hProcess);
-    if (job.valid()) {
-      AssignProcessToJobObject(job.get(), process_handle.get());
+    if (!AssignProcessToJobObject(job.get(), process_handle.get())) {
+      const DWORD error = GetLastError();
+      TerminateProcess(process_handle.get(), error);
+      WaitForSingleObject(process_handle.get(), INFINITE);
+      result.error_message = FormatWindowsError(error);
+      {
+        std::scoped_lock lock(state->input_mutex);
+        state->input_closed = true;
+        state->input_write.Reset();
+      }
+      state->running.store(false);
+      if (on_complete) on_complete(std::move(result));
+      return;
     }
 
+    bool cancelled_before_start = false;
     {
       std::scoped_lock lock(state->handles_mutex);
       state->job = std::move(job);
       state->process = std::move(process_handle);
-      if (state->cancel_requested.load()) {
-        if (state->job.valid()) {
-          TerminateJobObject(state->job.get(), ERROR_CANCELLED);
-        } else {
-          TerminateProcess(state->process.get(), ERROR_CANCELLED);
-        }
+      cancelled_before_start = state->cancel_requested.load();
+      if (cancelled_before_start) {
+        TerminateJobObject(state->job.get(), ERROR_CANCELLED);
       }
     }
 
+    if (!cancelled_before_start &&
+        ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
+      const DWORD error = GetLastError();
+      result.error_message = FormatWindowsError(error);
+      std::scoped_lock lock(state->handles_mutex);
+      TerminateJobObject(state->job.get(), error);
+    }
+
     output_write.Reset();
+    if (request.interactive_input) {
+      state->input_worker = std::jthread([state](std::stop_token stop_token) {
+        for (;;) {
+          std::string bytes;
+          HANDLE input = nullptr;
+          {
+            std::unique_lock lock(state->input_mutex);
+            state->input_ready.wait(lock, stop_token, [state] {
+              return state->input_closed || !state->input_queue.empty();
+            });
+            if ((stop_token.stop_requested() || state->input_closed) &&
+                state->input_queue.empty()) {
+              break;
+            }
+            bytes = std::move(state->input_queue.front());
+            state->input_queue.pop_front();
+            state->queued_input_bytes -= bytes.size();
+            input = state->input_write.get();
+          }
+          DWORD written = 0;
+          if (input == nullptr ||
+              !WriteFile(input, bytes.data(), static_cast<DWORD>(bytes.size()),
+                         &written, nullptr) ||
+              written != bytes.size()) {
+            std::scoped_lock lock(state->input_mutex);
+            state->input_closed = true;
+            state->input_queue.clear();
+            state->queued_input_bytes = 0;
+            break;
+          }
+        }
+      });
+    }
     std::array<char, 4096> buffer{};
     for (;;) {
       DWORD bytes_read = 0;
@@ -322,6 +469,19 @@ ProcessLaunchResult ProcessRunner::RunAsync(ProcessRequest request,
       }
     }
     result.cancelled = state->cancel_requested.load();
+
+    {
+      std::scoped_lock lock(state->input_mutex);
+      state->input_closed = true;
+      state->input_queue.clear();
+      state->queued_input_bytes = 0;
+      state->input_write.Reset();
+    }
+    state->input_ready.notify_all();
+    if (state->input_worker.joinable()) {
+      state->input_worker.request_stop();
+      state->input_worker.join();
+    }
 
     {
       std::scoped_lock lock(state->handles_mutex);

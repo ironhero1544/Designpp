@@ -31,6 +31,13 @@ When requirements conflict, use this order:
 - Primary target: x64 Windows.
 - EDA execution: WSL2 through the runtime layer and `wsl.exe`.
 - Managed backends: OpenLane 2 and OpenROAD Flow Scripts.
+- Embedded source editor: Monaco Editor 0.56.0 hosted by Microsoft WebView2
+  1.0.4078.44. Minimal JavaScript ESM under `editor/` is the only exception to
+  the C++ implementation-language rule; it must not contain application,
+  persistence, runtime, or EDA business logic.
+- Monaco assets are bundled by esbuild 0.28.1 at build time and are never loaded
+  from a CDN at runtime. TypeScript, React, Electron, and VS Code extensions are
+  outside the approved editor boundary.
 - Do not add CMake or Qt unless the user explicitly changes the project direction.
 - Do not add a third-party dependency without prior user approval.
 

@@ -51,7 +51,7 @@ GDSII / 리포트
 | 병렬 실행 | CPU token 기반 bounded multicore scheduler |
 | 다중 실행 | 여러 창과 여러 Design++ 프로세스 동시 실행 지원 |
 | 전체 Flow backend | OpenLane 2, ORFS |
-| 프로젝트 파일 | 버전이 있는 `.dpproj` 형식 예정 |
+| 프로젝트 파일 | Cell별 UTF-8 JSON `.dpproj` schema v4 (v1~v3 읽기 호환) |
 | 외부 라이브러리 | 사전 승인 없이 추가하지 않음 |
 
 CMake와 Qt는 사용하지 않는다. GUI는 Windows에서 네이티브로 실행되고 실제
@@ -243,16 +243,17 @@ escaping 책임은 해당 adapter에 둔다.
 
 ## 8. 프로젝트 저장 구조
 
-예정된 사용자 프로젝트 구조는 다음과 같다.
+Cell별 프로젝트 저장 구조는 다음과 같다.
 
 ```text
-project.dpproj
-rtl/
-tb/
-constraints/
-scripts/
-.designpp/
-  runs/
+<library>/cells/<cell-uuid>/
+  project.dpproj
+  views/
+  .designpp/
+    project.writer.lease
+    staging/
+    recovery/
+    runs/
     <run-id>/
       manifest.json
       events.jsonl
@@ -262,9 +263,9 @@ scripts/
       metrics.json
 ```
 
-`.dpproj`에는 schema version을 반드시 기록한다. 사용자 RTL과 생성물을
-분리하고 `.designpp/runs` 아래 run directory는 실행 중에도 순차적으로
-기록한다.
+`.dpproj`에는 schema version과 Library/Cell UUID를 기록한다. 관리 파일은
+`.dplib`가 소유하고 `.dpproj`는 파일별 override만 저장한다. 자세한 형식은
+[PROJECT_FORMAT.md](PROJECT_FORMAT.md)를 참고한다.
 
 초기 버전에서는 별도 데이터베이스를 도입하지 않고 versioned project file과
 run별 manifest를 사용한다. 프로젝트가 커져 검색 성능 문제가 생길 때 SQLite
@@ -355,95 +356,213 @@ Import Wizard 단계:
 
 ### Phase 1 — Toolchain 진단 및 실행 리소스 관리
 
-상태: 진행 중 (Library Manager 기반 기능 구현)
+상태: 완료
 
-- WSL 배포판 목록과 기본 배포판 탐색
-- WSL1/WSL2 구분
-- CPU token 기반 task scheduler
-- 외부 EDA 도구의 CPU 사용량을 포함하는 resource accounting
-- 여러 Design++ 프로세스가 공유하는 cross-process CPU quota
-- 취소, shutdown, fairness stress test
+- [완료] WSL 배포판 목록과 기본 배포판 탐색
+- [완료] WSL1/WSL2 구분
+- [완료] CPU token 기반 bounded task scheduler
+- [완료] 외부 EDA 도구의 CPU 사용량을 포함하는 resource accounting
+- [완료] 여러 Design++ 프로세스가 공유하는 named-semaphore CPU quota
+- [완료] 별도 Windows 자식 프로세스가 quota를 점유하는 process-boundary 회귀
+  검증
+- [완료] 취소, shutdown, 순서 보장과 high-task-count stress test
 - [완료] tool executable/version probe
 - [완료] WSL2/Ubuntu 초기 설정과 설치 단계 전용 권한 상승
 - [완료] APT/cocotb/Nix/OpenLane 2/ORFS 설치·업데이트 pipeline
 - [완료] Tool Check 선택 도구 개별 설치·삭제와 managed dependency 보호
+- [완료] Windows WebView2 Runtime 탐지와 선택 설치·복구
 - [완료] 실시간 설정 로그, 진행률, 취소 UI
 - [완료] Library Manager/Tool Check Per-Monitor V2 high-DPI 대응
-- OpenLane 2, ORFS 설치 경로 설정
-- PDK root 탐색과 유효성 검사
-- Toolchain Profile 저장
-- GUI Doctor 화면
+- [완료] OpenLane 2, ORFS 설치 경로 설정
+- [완료] PDK root 설정과 유효성 검사
+- [완료] Toolchain Profile CRUD와 저장
+- [완료] 독립 GUI Doctor 화면
 
 완료 기준: 사용자가 프로젝트 생성 전에 실행 가능한 도구와 누락된 도구를
 한 화면에서 확인할 수 있고, 동시에 여러 작업이나 GUI를 실행해도 설정된
 CPU budget을 초과하지 않는다.
 
-### Phase 2 — 프로젝트 저장 및 작업 공간
+### Phase 2 — Library 저장 및 프로젝트 작업 공간
 
-- `.dpproj` schema v1
-- New/Open/Save/Save As
-- RTL source 추가와 제거
-- top module, include, define 설정
-- Windows 경로와 WSL 경로 매핑
-- `.designpp/runs` 생성과 run manifest
-- 창별 독립 project context
-- 동일 프로젝트의 cross-process writer lease와 read-only fallback
-- UUID 기반 독립 run directory와 atomic project save
-- 최근 프로젝트 목록
+상태: 완료
 
-완료 기준: 앱을 재시작해도 프로젝트와 설정이 동일하게 복원되고, 여러 창과
-여러 프로세스가 같은 프로젝트를 열어도 설정이나 run이 손상되지 않는다.
+- [완료] 공용 Library Root 설정과 자동 탐색
+- [완료] `Library → Cell → View` 도메인과 `.dplib` schema v1
+- [완료] Library/Cell/View 생성, 속성 수정, 관리 파일 가져오기와 삭제
+- [완료] atomic manifest 저장, revision 충돌 검사 및 writer lease
+- [완료] 로컬 휴지통 삭제와 UNC 영구 삭제 확인 경계
+- [완료] 비동기 Tree/List 갱신과 Workspace open request 연결
+- [완료] Library/Cell/View 3열 브라우저와 영역별 검색·상태/종류 필터
+- [완료] 검색 exact-match 이동과 미존재 이름의 인라인 생성 요청
+- [완료] `ViewWindow`/factory 기반 top-level 도구 창 수명 관리와 동일 Cell
+  Verilog 창 재사용
+- [완료] `.dpproj` schema v2, v1 migration 및 첫 열기 자동 생성
+- [완료] 명시적 Save/Ctrl+S와 dirty 종료 확인
+- [완료] `.dplib` 기반 Source Set 자동 동기화와 파일별 제외
+- [완료] top module, include, define, parameter, constraint, CPU 설정
+- [완료] Source Set 기반 top module, parameter, include, constraint 기본값 추론
+- [완료] 단일 top module RTL 저장 시 module 이름 기반 파일명 자동 정규화
+- [완료] Windows 경로와 WSL 경로 매핑
+- [완료] `.designpp/runs` 생성과 run manifest
+- [완료] 창별 독립 project context와 session generation
+- [완료] 동일 프로젝트의 cross-process writer lease와 read-only fallback
+- [완료] UUID 기반 독립 run directory와 atomic project save
+- [완료] Registry 기반 최근 Workspace 목록, 중복 제거, stale entry 정리와
+  Library Manager 재열기
+- [완료] 독립 store 동시 read/merge/write에서 최근 Workspace 유실 방지 검증
+
+완료 기준: 앱을 재시작해도 Library와 프로젝트 설정이 동일하게 복원되고,
+여러 창과 여러 프로세스가 같은 Library/프로젝트를 열어도 설정이나 run이
+손상되지 않는다.
 
 ### Phase 3 — Verilator Lint vertical slice
 
-- `IToolAdapter`/adapter registry
-- Verilator probe와 command generation
-- Lint configuration UI
-- 실시간 로그
-- warning/error parser
-- Problems pane와 source 위치 이동
-- 실행 취소와 재실행
+상태: 첫 vertical slice 완료
+
+- [완료] capability 기반 `ToolAdapter` 경계
+- [완료] Verilator probe, 검증과 구조화 command generation
+- [완료] Lint configuration UI
+- [완료] 실시간 raw log 보존과 Library Manager 미러링
+- [완료] warning/error parser
+- [완료] Problems와 Runs pane
+- [완료] 실행 취소와 재실행
+- [완료] cross-process CPU quota와 Interrupted run 복구
 
 완료 기준: 예제 RTL을 열고 GUI에서 Lint를 실행한 뒤 오류 파일과 줄 번호를
 확인할 수 있다.
 
+### Phase 3.5 — Monaco HDL 편집기
+
+상태: v1 구현 완료
+
+- [완료] WebView2 기반 로컬 Monaco Editor 내장
+- [완료] `.v`, `.vh`, `.sv`, `.svh` 다중 model/tab 편집
+- [완료] Verilog/SystemVerilog Monarch syntax highlighting
+- [완료] undo/redo, find/replace, go-to-line과 model별 view state
+- [완료] 명시적 Save, 직렬 Save All과 dirty 종료 확인
+- [완료] UTF-8/BOM/EOL 보존과 16 MiB 편집 한계
+- [완료] content hash/revision/writer lease 기반 충돌 차단
+- [완료] Workspace 단위 재귀 file watcher와 외부 변경 알림
+- [완료] Verilator marker와 Problems 위치 이동
+- [완료] local virtual host, CSP와 versioned JSON protocol
+- [완료] WebView2 Runtime 실패 시 Workspace 기능 유지
+- [완료] 앱 COM STA 초기화와 WebView2 실패 HRESULT 진단
+
+후속 범위는 HDL LSP/IntelliSense, symbol navigation, formatting provider,
+Git, terminal, Monaco source breakpoint 및 VS Code extension compatibility다.
+
 ### Phase 4 — RTL Simulation
 
-- Verilator simulation
-- Icarus 선택 backend
-- cocotb runner
-- test configuration 관리
-- VCD/FST artifact 등록
-- GTKWave 실행
-- simulation 성공/실패와 test summary
+상태: 완료
+
+- [완료] Icarus Testbench 실행 (`iverilog` → `vvp`)
+- [완료] 활성 Testbench 탭 기반 실행 Inspector
+- [완료] 파일별 Testbench Top/VCD 설정과 `.dpproj` schema v2
+- [완료] VCD artifact 등록과 GTKWave 수동 실행
+- [완료] VVP 대화형 디버거의 시작 정지, Continue, event Step, Finish
+- [완료] Debug scope/variable console과 `$stop` Monaco 위치 이동
+- [완료] bounded interactive stdin과 Debug run/VCD 기록
+- [완료] Run/Debug execution provider와 generation-safe terminal delivery
+- [완료] 별도 WSL Icarus/VCD/WSLg/cancellation integration test gate
+- [완료] Verilator simulation과 Workspace 실행 연결
+- [완료] cocotb runner와 Icarus/Verilator backend 선택
+- [완료] test configuration 관리 (`.dpproj` schema v3와 Inspector UI)
+- [완료] VCD/FST 생성 선택, artifact 등록과 재시작 복원
+- [완료] GTKWave 실행 상태와 오류 출력
+- [완료] WSLg `[WARN:COPYMODE]` 공유 메모리 장애 사전 진단 및 선택 배포판
+  자동 복구
+- [완료] process/test 결과 분리, xUnit 원본 보존, schema v2 summary와
+  testcase별 Tests 화면 및 과거 Run 복원
+- [완료] managed cocotb venv probe, cocotb 1.9/2.x invocation 호환, 실제
+  Icarus/VCD 및 Verilator/FST integration gate
+
+대화형 디버거 v1은 `vvp -i -s`와 Testbench의 `$stop`을 사용한다. 일반 Run은
+`vvp -N`으로 `$stop`을 실패 종료로 처리한다. Monaco breakpoint, 실행 중 임의
+Pause, statement 단위 stepping과 persistent Watch는 후속 범위다.
 
 완료 기준: GUI에서 테스트를 실행하고 생성된 waveform을 GTKWave로 열 수
 있다.
 
 ### Phase 5 — Standalone Synthesis/STA
 
-- Yosys adapter
-- synthesis script 생성과 command preview
-- netlist/report artifact
-- cell count/area parser
-- OpenSTA adapter
-- SDC/Liberty corner 설정
-- WNS/TNS 및 violation browser
+상태: Yosys/Schematic/OpenSTA vertical slice 및 안정화 완료
+
+- [완료] Yosys adapter와 비동기 `SynthesisRunService` (probe, enabled RTL/top
+  검증, CPU quota, script, Run/Cancel, artifact/statistics 판정, exactly-once
+  completion) 및 전용 `SynthesisWindow` 연결
+- [완료] Monaco 기반 `VerilogWindow`와 비-Monaco `SynthesisWindow` top-level
+  클래스 분리, 공통 `ViewWindowFactory` 라우팅
+- [완료] synthesis script, JSON/Verilog netlist, statistics/report와 summary
+  artifact 보존 및 상단 Script/Reports/Artifacts 표시
+- [완료] 공백/한글 Library 경로를 위한 run UUID별 Yosys ASCII-safe staging과
+  Windows-side artifact 보존
+- [완료] cell count/area parser와 전용 Reports 표시
+- [완료] ABC 이전 `schematic-structural.json`과 ABC 이후 `netlist.json`을
+  분리 보존하고, 기본 Readable inferred-logic 보기와 실제 Gate 보기를 전환
+- [완료] tool-neutral `SchematicModel`과 worker 기반
+  `SchematicBuildService`(normalize, validate, sequential-boundary depth, SCC,
+  layout, orthogonal routing)를 도입하고 GDI canvas는 immutable scene만 렌더링
+- [완료] register/register-bank, arithmetic, comparator, mux, generic block,
+  bus 폭 표기, clock/reset/enable 역할·polarity 및 feedback lane 표현
+- [완료] IEEE distinctive-shape primitive, obstacle 회피, shared trunk,
+  non-connecting bridge, red pin/blue branch 의미 색상, 확대·이동·Fit 유지
+- [완료] Gate 보기가 2,000 nodes 또는 8,000 connections를 넘으면 부분 회로를
+  표시하지 않고 명시적 크기 진단 제공
+- [완료] Yosys 성공·실패·취소·artifact 계약, RTL fixture matrix, 대형
+  Schematic fast-router, Canvas Fit/LOD/GDI 누수·렌더링 예산 회귀 테스트
+- [완료] OpenLane 2 Nix 환경의 OpenSTA adapter와 비동기
+  `TimingRunService` (probe, 합성 호환성 검증, CPU quota, ASCII-safe staging,
+  setup/hold 실행, 취소 및 exactly-once completion)
+- [완료] 독립 `TimingWindow`, 관리 SDC/Liberty와 corner 설정 저장,
+  Synthesis 이동, Reports/Artifacts/Script 표시
+- [완료] Library manifest schema v3 shared managed files와 Library-level
+  Liberty 가져오기/표시 및 모든 Cell의 Synthesis/Timing 후보 공유
+- [완료] setup/hold WNS/TNS, path 존재 여부와 최대 1,000개 violation parser,
+  process success와 timing result success의 분리 기록
+- [완료] synthesis summary schema v2 configuration/Liberty fingerprint와 최신
+  호환 mapped netlist 선택 계약
+- [완료] Timing 결과의 `ns` 단위 명시, setup/hold/recovery/removal 분리 집계,
+  표 기반 violation 표시와 timing summary schema v2 저장
+- [완료] OpenSTA 진단과 Nix 환경의 원시 경고를 분리하고, 원시 출력은 run log에
+  그대로 보존
+- [완료] Timing Run history의 corner/WNS/TNS 표와 과거 Run 선택 복원
+- [완료] Timing service의 nonzero/missing artifact/malformed report/staging
+  failure/stale generation/shutdown 계약 테스트 행렬
+- [완료] 숨김 `TimingWindow` 생성·상태·message responsiveness smoke와 한글·공백
+  Library 입력의 OpenSTA ASCII-safe staging 회귀 테스트
 
 완료 기준: RTL에서 netlist를 생성하고 timing 결과를 GUI에서 비교할 수 있다.
 
-### Phase 6 — OpenLane 2 Managed Flow
+### Phase 6 — Backend Physical Implementation + Layout View
 
-- OpenLane project/config 생성
-- full flow 실행
-- Step/State/Metric 매핑
-- 단계별 진행률과 로그 분리
-- artifact와 metrics 수집
-- 실패 단계 재실행/resume
-- GDSII와 최종 report 등록
+- [완료] Library schema v5에서 legacy Physical Design View를 Layout View로
+  메모리 migration하고 새 Physical Design View 생성을 제거
+- [완료] Project schema v6의 tool-neutral
+  `PhysicalImplementationConfiguration`과 v5 `openlane` 설정 migration
+- [완료] OpenLane JSON config 생성과 managed RTL/include/define/parameter/SDC
+  staging
+- [완료] `ManagedFlowAdapter`/`ManagedFlowRunService` 확장 경계와 OpenLane 2
+  Classic full flow 실행
+- [완료] exact OpenLane step ID의 Design++ stage 정규화와 단계별 진행 로그
+- [완료] METRICS2.1 known metric 정규화 및 unknown raw metric 보존
+- [완료] immutable state, final view, report, raw log와 checkpoint artifact 수집
+- [완료] fingerprint/lineage/checkpoint 기반 실패 Run resume 계약
+- [완료] `PhysicalImplementationService`의 compatible GDS 재사용, stale 입력
+  재실행 및 compatible checkpoint 자동 resume 계약
+- [완료] Layout 재시작 시 고아 Running/Queued Run을 Interrupted로 복구하고
+  compatible checkpoint를 자동 resume 후보로 유지
+- [완료] 독립 `LayoutWindow`의 Generate/Cancel/Setup/Open Layout/Reports/
+  Artifacts UX와 외부 KLayout WSLg 연동
+- [완료] KLayout 실행 전 WSLg shared-memory health check와 안전한 tmpfs
+  복구를 공통 Viewer 실행 경계에 연결
+- [완료] OpenLane 2 Classic은 사용자-facing View/Window가 아닌 managed
+  RTL-to-GDS backend로만 등록
+- [완료] 실제 OpenLane 2.3.10/sky130A에서 한글·공백 staging, Floorplan
+  checkpoint 생성, exact step resume 및 tiny sequential RTL-to-GDS final artifact
+  WSL integration fixture
 
-완료 기준: 공개 PDK와 예제 설계로 RTL-to-GDS 전체 실행을 완료하고 결과를
-Design++에서 탐색할 수 있다.
+완료 기준: 공개 PDK와 예제 설계로 RTL-to-GDS 전체 실행을 완료하고 Layout
+View에서 compatible GDS 상태를 확인하고 KLayout으로 열 수 있다.
 
 ### Phase 7 — ORFS Managed Flow
 
@@ -457,9 +576,9 @@ Design++에서 탐색할 수 있다.
 완료 기준: ORFS를 포크하지 않고 외부 프로젝트 설정으로 전체 또는 선택
 단계를 실행할 수 있다.
 
-### Phase 8 — Layout 및 DRC/LVS
+### Phase 8 — 물리 검증 및 Layout 확장
 
-- KLayout 실행 및 GDS/LEF/DEF 열기
+- DEF/LEF 및 marker 기반 Layout 탐색 확장
 - Magic DRC adapter
 - Netgen LVS adapter
 - DRC marker와 LVS mismatch parser
@@ -484,6 +603,7 @@ Design++에서 탐색할 수 있다.
 | v0.1 | 현재 Win32/WSL2 foundation |
 | v0.2 | 프로젝트 저장과 Toolchain Doctor |
 | v0.3 | Verilator Lint |
+| v0.35 | Monaco HDL 편집기와 진단 연결 |
 | v0.4 | RTL Simulation, cocotb, GTKWave |
 | v0.5 | Yosys와 OpenSTA |
 | v0.7 | OpenLane 2 Full Flow |

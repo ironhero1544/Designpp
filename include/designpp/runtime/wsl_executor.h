@@ -13,10 +13,12 @@ namespace designpp::runtime {
 // Describes a Linux program invocation inside WSL2.
 struct WslCommand {
   std::optional<std::wstring> distribution;
+  std::optional<std::wstring> user;
   std::optional<std::wstring> working_directory;
   std::wstring program;
   std::vector<std::wstring> arguments;
   std::vector<std::pair<std::wstring, std::wstring>> environment;
+  bool interactive_input = false;
 };
 
 // Converts structured Linux commands into cancellable wsl.exe processes.

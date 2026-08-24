@@ -9,14 +9,22 @@ ProcessRequest WslExecutor::BuildRequest(const WslCommand& command) {
 
   ProcessRequest request;
   request.executable = L"wsl.exe";
+  request.interactive_input = command.interactive_input;
 
   if (command.distribution && !command.distribution->empty()) {
     request.arguments.emplace_back(L"--distribution");
     request.arguments.push_back(*command.distribution);
   }
+  if (command.user && !command.user->empty()) {
+    request.arguments.emplace_back(L"--user");
+    request.arguments.push_back(*command.user);
+  }
   if (command.working_directory && !command.working_directory->empty()) {
     request.arguments.emplace_back(L"--cd");
     request.arguments.push_back(*command.working_directory);
+  } else {
+    request.arguments.emplace_back(L"--cd");
+    request.arguments.emplace_back(L"~");
   }
 
   request.arguments.emplace_back(L"--exec");
