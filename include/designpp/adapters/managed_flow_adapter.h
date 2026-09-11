@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "designpp/core/diagnostic.h"
@@ -41,11 +42,21 @@ struct ManagedFlowMetrics {
   std::optional<double> slew_violations;
   std::optional<double> capacitance_violations;
   std::optional<double> fanout_violations;
+  std::optional<double> global_route_congestion;
+  std::optional<double> detailed_route_congestion;
+  std::optional<double> global_route_overflow;
+  std::optional<double> detailed_route_overflow;
+  std::optional<double> routing_violations;
+  std::optional<double> runtime_seconds;
+  std::optional<double> peak_memory_mb;
   std::optional<double> drc_violations;
   std::optional<double> xor_violations;
   std::optional<double> lvs_errors;
   std::optional<double> ir_drop_worst;
   std::map<std::string, std::string> raw;
+  // Ordered values are retained for backends such as ORFS whose per-step
+  // metric files can legally repeat a metric key.
+  std::vector<std::pair<std::string, std::string>> raw_entries;
 
   [[nodiscard]] bool Passed() const noexcept;
 };
@@ -65,6 +76,13 @@ struct ManagedFlowArtifactSet {
   std::filesystem::path spef;
 };
 
+struct ManagedFlowStageInfo {
+  core::StageId stage = core::StageId::kRtlInput;
+  std::string backend_target;
+  std::string gui_target;
+  std::string checkpoint_name;
+};
+
 class ManagedFlowAdapter {
  public:
   virtual ~ManagedFlowAdapter() = default;
@@ -77,6 +95,12 @@ class ManagedFlowAdapter {
       std::string_view output) const = 0;
   [[nodiscard]] virtual core::Result<ManagedFlowMetrics> ParseMetrics(
       std::string_view metrics_json) const = 0;
+
+  // Backend-neutral stage capabilities.  Adapters that do not expose
+  // incremental targets may leave these defaults empty.
+  [[nodiscard]] virtual std::vector<ManagedFlowStageInfo> Stages() const {
+    return {};
+  }
 };
 
 }  // namespace designpp::adapters

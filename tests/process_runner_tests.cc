@@ -63,6 +63,25 @@ TEST_METHOD(OversizedInteractiveInputIsRejected) {
   launch.session.Cancel();
 }
 
+TEST_METHOD(Utf8ChunksPreserveSplitCodePoints) {
+  std::string remainder;
+  std::string first = "A";
+  first.append("\xED\x95", 2);
+  Assert::AreEqual(std::string("A"),
+                   runtime::TakeCompleteUtf8Chunk(first, &remainder));
+  Assert::AreEqual(static_cast<std::size_t>(2), remainder.size());
+
+  std::string second;
+  second.append("\x9C", 1);
+  second.push_back('Z');
+  std::string expected;
+  expected.append("\xED\x95\x9C", 3);
+  expected.push_back('Z');
+  Assert::AreEqual(expected,
+                   runtime::TakeCompleteUtf8Chunk(second, &remainder));
+  Assert::IsTrue(remainder.empty());
+}
+
 TEST_METHOD(NonInteractiveInputStartsAtEndOfFile) {
   runtime::ProcessRequest request;
   request.executable = L"powershell.exe";

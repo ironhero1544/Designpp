@@ -1,5 +1,41 @@
 # Design++ 제작 계획
 
+## Tool Check 검증 현황 (2026-09-07)
+
+2026-09-08 Tool Check 수정: managed 환경 inventory가 모든 기존 checkout에
+무조건 `환경 준비 필요`를 반환하던 임시 동작을 제거했다. 명시적 준비가
+성공한 환경은 provider/version/commit 완료 표식을 남기며, 일반 검사는 Nix
+shell을 열지 않고 표식과 실제 checkout commit을 read-only로 검증한다.
+Determinate Nix의 `nix (Determinate Nix ...) <version>` 출력도 정상 파싱한다.
+OpenLane 설치는 2.3.10 commit을 후보 디렉터리에서 검증한 뒤 원자적으로
+활성화하고, ORFS와 동일하게 실패 시 기존 환경을 보존한다.
+
+2026-09-08 추가 검증: 승인된 후보 소스 빌드를 완료했다. Yosys 레시피가
+배포판 ABC를 잘못 선택하던 부분을 고정 ABC 서브모듈로 교체하고, GoogleTest
+1.14.0을 해시 고정 입력으로 공급했다. `read_lib -m`와
+`repair_timing -sequence` 검사가 통과했다. EQY도 commit
+`eff96db01293848b993651caa52d747f191be02e`로 고정하고 같은 Yosys에 대해
+빌드했다. nangate45와 sky130hd 공개 GCD fixture 모두 최종
+GDS/DEF/ODB/netlist/SDC 생성 및 headless ODB load까지 확인했다. sky130hd의
+post-CTS equivalence check도 비활성화하지 않고 통과했다.
+
+ORFS 26Q2 후보는 annotated tag ID가 아닌 실제 commit
+`036d106273e66855cd5214d49518fd0f0df7de61`로 고정한다. 설치는 해당
+OpenROAD/Yosys submodule commit도 검사하며, 기존 설치와 실패 후보를 보존한다.
+일반 ORFS probe/Run은 offline/cache-only로 실행하고 설치도 승인 없는 소스
+빌드를 차단한다. 실제 후보 준비에서 OpenROAD 바이너리 캐시 부재로 이 차단이
+동작했으며, 별도 승인된 소스 빌드로 Nix closure를 준비한 뒤 두 platform의
+full-flow를 검증했다. 공통 inventory/preparation
+서비스, 승인 UI, 설치 manifest 및 rollback UI 통합도 별도 미완료 항목이다.
+
+## Layout Setup 안정화 계약
+
+Setup은 Cell별 draft를 소유하고 빈 값으로 override를 해제한다. 폼 Save와
+JSON Ctrl+S는 같은 비동기 저장 경로를 사용하며 저장 후 창을 유지한다.
+schema v11은 자동값 선택을 보존한다. 전체 완료 판정에는 실제 Save 버튼과
+디스크 재로드, 저장 실패/종료 경합, 두 Cell 격리, Monaco 수명, ORFS 자동 및
+고정 면적 Floorplan integration 검증이 필요하다.
+
 ## 1. 프로젝트 목표
 
 Design++는 파편화된 오픈소스 디지털 설계 도구를 하나의 Windows 데스크톱
@@ -51,7 +87,7 @@ GDSII / 리포트
 | 병렬 실행 | CPU token 기반 bounded multicore scheduler |
 | 다중 실행 | 여러 창과 여러 Design++ 프로세스 동시 실행 지원 |
 | 전체 Flow backend | OpenLane 2, ORFS |
-| 프로젝트 파일 | Cell별 UTF-8 JSON `.dpproj` schema v4 (v1~v3 읽기 호환) |
+| 프로젝트 파일 | Cell별 UTF-8 JSON `.dpproj` schema v10 (v1~v9 읽기 호환) |
 | 외부 라이브러리 | 사전 승인 없이 추가하지 않음 |
 
 CMake와 Qt는 사용하지 않는다. GUI는 Windows에서 네이티브로 실행되고 실제
@@ -537,8 +573,9 @@ Pause, statement 단위 stepping과 persistent Watch는 후속 범위다.
 
 - [완료] Library schema v5에서 legacy Physical Design View를 Layout View로
   메모리 migration하고 새 Physical Design View 생성을 제거
-- [완료] Project schema v6의 tool-neutral
-  `PhysicalImplementationConfiguration`과 v5 `openlane` 설정 migration
+- [완료] Project schema v10의 tool-neutral
+  `PhysicalImplementationConfiguration`, v5 `openlane` 설정 migration 및
+  PDK-default/사용자 override를 구분하는 PDN grid 설정
 - [완료] OpenLane JSON config 생성과 managed RTL/include/define/parameter/SDC
   staging
 - [완료] `ManagedFlowAdapter`/`ManagedFlowRunService` 확장 경계와 OpenLane 2
@@ -546,6 +583,8 @@ Pause, statement 단위 stepping과 persistent Watch는 후속 범위다.
 - [완료] exact OpenLane step ID의 Design++ stage 정규화와 단계별 진행 로그
 - [완료] METRICS2.1 known metric 정규화 및 unknown raw metric 보존
 - [완료] immutable state, final view, report, raw log와 checkpoint artifact 수집
+- [완료] Magic DRC, Netgen LVS, KLayout DRC/XOR 원문 리포트를 backend-relative
+  경로와 파일명 그대로 Run의 `reports/openlane`에 보존하고 artifact로 색인
 - [완료] fingerprint/lineage/checkpoint 기반 실패 Run resume 계약
 - [완료] `PhysicalImplementationService`의 compatible GDS 재사용, stale 입력
   재실행 및 compatible checkpoint 자동 resume 계약
@@ -553,8 +592,22 @@ Pause, statement 단위 stepping과 persistent Watch는 후속 범위다.
   compatible checkpoint를 자동 resume 후보로 유지
 - [완료] 독립 `LayoutWindow`의 Generate/Cancel/Setup/Open Layout/Reports/
   Artifacts UX와 외부 KLayout WSLg 연동
-- [완료] KLayout 실행 전 WSLg shared-memory health check와 안전한 tmpfs
-  복구를 공통 Viewer 실행 경계에 연결
+- [완료] Layout Setup의 multilayer/core-ring/rail 및 수직·수평
+  width/spacing/pitch/offset PDN 설정과 OpenLane config/fingerprint 연결
+- [완료] absolute floorplan의 Die area와 내부 Core area 직접 설정·검증
+- [완료] Tap/endcap insertion의 `FP_TAPCELL_DIST`를 µm 단위 선택값으로
+  Layout Setup, persistence, config 및 fingerprint에 연결
+- [완료] DPI 대응 탭형 Layout Setup과 matching/random/annealing I/O 자동 배치,
+  중첩 N/S/E/W 방향 탭 기반 사용자 pin-order, PDK-default 안내, run별
+  `pin_order.cfg` 및 checkpoint fingerprint 연결
+- [완료] 폼 설정과 안전한 unknown override를 양방향 동기화하는 별도 OpenLane
+  Monaco JSON Validate/Format/Apply 편집기와 managed/path/nested/duplicate key
+  거부, 요청 시점 비동기 텍스트 snapshot, Save Setup/Ctrl+S의 원자적 프로젝트
+  저장 연결. resolved config의 run-owned `FP_PIN_ORDER_CFG` 경로는 읽거나
+  저장하지 않고 무시하며 나머지 typed 설정은 적용
+- [완료] KLayout 실행 전 WSLg shared-memory health check, root-owned 0755
+  디렉터리의 1777 권한 복구, 안전한 tmpfs fallback을 공통 Viewer 실행 경계에
+  연결
 - [완료] OpenLane 2 Classic은 사용자-facing View/Window가 아닌 managed
   RTL-to-GDS backend로만 등록
 - [완료] 실제 OpenLane 2.3.10/sky130A에서 한글·공백 staging, Floorplan
@@ -564,27 +617,61 @@ Pause, statement 단위 stepping과 persistent Watch는 후속 범위다.
 완료 기준: 공개 PDK와 예제 설계로 RTL-to-GDS 전체 실행을 완료하고 Layout
 View에서 compatible GDS 상태를 확인하고 KLayout으로 열 수 있다.
 
-### Phase 7 — ORFS Managed Flow
+### Phase 7 — ORFS 단계 실행·Checkpoint·OpenROAD GUI
 
-- 외부 `DESIGN_CONFIG` 생성
-- ORFS stage와 Design++ Stage 매핑
-- synthesis/floorplan/place/CTS/route 단계 실행
-- checkpoint와 resume
-- OpenROAD GUI 연동
-- congestion, utilization, clock, timing metrics
+- [완료] 외부 `DESIGN_CONFIG`(`config.mk`) 생성과 Unicode/공백 입력 staging
+- [완료] ORFS target과 Design++ Stage 매핑 및 backend capability registry
+- [완료] synthesis/floorplan/place/CTS/route/finish 단계 실행 경계
+- [완료] ORFS Make artifact graph 직렬화와 `NUM_CORES` 기반 내부 도구 병렬화
+- [완료] checkpoint, compatible target 재사용, fingerprint 기반 resume 경계
+- [완료] 실제 RTL/include/SDC 내용과 활성 ORFS 설정을 먼저 고정하는
+  `PreparedPhysicalInputs` 계약. 자동 resume의 불일치는 실패 대신 새 lineage로
+  전환하고, 명시적 Rebuild From 불일치는 원인과 Run ID를 보존하며 거부
+- [완료] managed SDC의 명시적 시간 단위를 존중하는 clock 정규화와 실제
+  최단 clock 기반 `CLOCK_PERIOD`/ABC 제약 생성. raw metric은 보존하고
+  단위를 확인한 Layout timing 값만 ns로 표시
+- [완료] ORFS `write_sdc`가 command unit을 기록하지 않는 동작을 Run별
+  OpenROAD 초기화 계약으로 보완. 합성 이후 새 OpenROAD 프로세스와
+  resume/viewer에서도 managed SDC의 최종 명시 단위를 다시 적용하며, 이
+  계약 변경은 기존 checkpoint를 stale 처리
+- [완료] ORFS platform discovery와 incomplete platform 진단
+- [완료] checkout·Make·OpenROAD executable을 함께 검사하는 capability probe와
+  lineage별 cross-process exclusive writer lease
+- [완료] ORFS flake의 오래된 Yosys 고정값 대신 checkout의 `tools/yosys` 및 ABC를
+  probe와 실행에 동일하게 연결하고 `stat -hierarchy`/`read_lib -m`을 검사한다.
+  ABC 전략 강제 변경이나 Liberty·합성 스크립트 변환은 사용하지 않는다.
+- [완료] ASAP7 압축 multi-Liberty 합성 integration: 한글 원본의 ASCII staging,
+  실제 adapter probe/실행, netlist 및 `1_synth.odb` 생성 검증.
+- [완료] OpenROAD checkpoint viewer의 독립 WSLg 실행 경계
+- [완료] 반복 metric 보존과 공통 area/utilization/timing/congestion raw map 경계
+- [완료] sky130hd/nangate45 공개 GCD fixture의 full flow, 최종 artifact 및
+  OpenROAD headless ODB load. sky130hd post-CTS EQY 검사도 활성 상태로 통과.
 
 완료 기준: ORFS를 포크하지 않고 외부 프로젝트 설정으로 전체 또는 선택
-단계를 실행할 수 있다.
+단계를 실행할 수 있고, Layout Stages에서 checkpoint와 OpenROAD viewer를
+호출할 수 있다.
 
 ### Phase 8 — 물리 검증 및 Layout 확장
 
-- DEF/LEF 및 marker 기반 Layout 탐색 확장
-- Magic DRC adapter
-- Netgen LVS adapter
-- DRC marker와 LVS mismatch parser
-- physical verification 결과 화면
+- [구현] ToolchainSettings v3의 활성·롤백 환경 참조, 설치 환경 inventory와
+  사용자/managed verification recipe registry
+- [구현] Run manifest v4의 source Run, 실제 environment ID와 fingerprint
+- [구현] Project schema v12의 Cell별 physical verification 설정과 무변경
+  migration
+- [구현] `PhysicalVerificationService`의 별도 Run, CPU quota, probe/execute,
+  cancellation, raw log, input hash manifest와 원본 report 보존
+- [구현] KLayout DRC/LVS, Magic DRC, Netgen LVS adapter 및 빈/malformed 결과의
+  PASS 방지
+- [구현] Layout의 Summary/Verification/Runs 탭, DRC/LVS/전체 검증, 현재 GDS와
+  다른 source Run 결과의 Stale 표시
+- [진행] DEF/LEF 및 marker 선택을 KLayout 위치 탐색으로 연결
+- [진행] OpenLane sky130A Magic 추출+Netgen 기본 recipe와 사용자 recipe 신뢰
+  등록 UI
+- [검증 필요] 현재 Timer/ASAP7 및 sky130hd/nangate45 실제 규칙 회귀. ASAP7
+  LVS는 호환 recipe 등록 전 비활성 상태를 유지한다.
 
-완료 기준: 최종 GDS를 열고 DRC/LVS pass/fail과 상세 오류를 확인할 수 있다.
+완료 기준: 최종 GDS를 열고 DRC/LVS pass/fail과 원본 report 및 상세 오류를
+확인할 수 있으며, 실제 환경 회귀와 Debug/Release gate가 모두 통과해야 한다.
 
 ### Phase 9 — Import와 안정화
 

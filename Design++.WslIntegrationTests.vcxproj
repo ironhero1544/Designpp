@@ -34,11 +34,17 @@
     <ClCompile Include="src\adapters\yosys_adapter.cc" />
     <ClCompile Include="src\adapters\opensta_adapter.cc" />
     <ClCompile Include="src\adapters\openlane2_adapter.cc" />
+    <ClCompile Include="src\adapters\managed_flow_adapter_factory.cc" />
+    <ClCompile Include="src\adapters\orfs_adapter.cc" />
+    <ClCompile Include="src\application\orfs_discovery_service.cc" />
     <ClCompile Include="src\adapters\simulation_result_parser.cc" />
     <ClCompile Include="src\adapters\verilator_adapter.cc" />
     <ClCompile Include="src\adapters\verilator_simulation_adapter.cc" />
     <ClCompile Include="src\application\module_scanner.cc" />
     <ClCompile Include="src\application\synthesis_fingerprint.cc" />
+    <ClCompile Include="src\core\project.cc" />
+    <ClCompile Include="src\application\layout_setup_draft.cc" />
+    <ClCompile Include="src\core\toolchain_profile.cc" />
     <ClCompile Include="src\gui\orthogonal_edge_router.cc" />
     <ClCompile Include="src\gui\schematic_scene_builder.cc" />
     <ClCompile Include="src\runtime\path_mapper.cc" />

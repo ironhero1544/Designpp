@@ -67,6 +67,300 @@ std::string_view Trim(std::string_view value) {
   return value;
 }
 
+struct FlatJsonObject {
+  std::map<std::string, std::string> values;
+};
+
+class FlatJsonParser final {
+ public:
+  explicit FlatJsonParser(std::string_view input) : input_(input) {}
+
+  core::Result<FlatJsonObject> Parse() {
+    SkipSpace();
+    if (!Take('{')) return Error("expected an object");
+    FlatJsonObject result;
+    SkipSpace();
+    if (Take('}')) return result;
+    while (position_ < input_.size()) {
+      auto key = ParseString();
+      if (!key) return Error("expected a string key");
+      SkipSpace();
+      if (!Take(':')) return Error("expected ':' after key");
+      SkipSpace();
+      const std::size_t value_begin = position_;
+      if (!SkipValue()) return Error("invalid value for key " + *key);
+      const std::string value(
+          Trim(input_.substr(value_begin, position_ - value_begin)));
+      if (!result.values.emplace(*key, value).second) {
+        return Error("duplicate key " + *key);
+      }
+      SkipSpace();
+      if (Take('}')) {
+        SkipSpace();
+        if (position_ != input_.size()) return Error("trailing characters");
+        return result;
+      }
+      if (!Take(',')) return Error("expected ',' between values");
+      SkipSpace();
+    }
+    return Error("unterminated object");
+  }
+
+ private:
+  core::Status Error(std::string detail) const {
+    std::size_t line = 1;
+    std::size_t column = 1;
+    for (std::size_t index = 0; index < position_ && index < input_.size();
+         ++index) {
+      if (input_[index] == '\n') {
+        ++line;
+        column = 1;
+      } else {
+        ++column;
+      }
+    }
+    return {core::ErrorCode::kInvalidArgument,
+            "OpenLane JSON line " + std::to_string(line) + ", column " +
+                std::to_string(column) + ": " + detail,
+            0};
+  }
+
+  void SkipSpace() {
+    while (position_ < input_.size() &&
+           std::isspace(static_cast<unsigned char>(input_[position_]))) {
+      ++position_;
+    }
+  }
+
+  bool Take(char expected) {
+    if (position_ >= input_.size() || input_[position_] != expected) {
+      return false;
+    }
+    ++position_;
+    return true;
+  }
+
+  std::optional<std::string> ParseString() {
+    SkipSpace();
+    if (!Take('"')) return std::nullopt;
+    std::string value;
+    while (position_ < input_.size()) {
+      char character = input_[position_++];
+      if (character == '"') return value;
+      if (static_cast<unsigned char>(character) < 0x20) return std::nullopt;
+      if (character != '\\') {
+        value.push_back(character);
+        continue;
+      }
+      if (position_ >= input_.size()) return std::nullopt;
+      const char escaped = input_[position_++];
+      switch (escaped) {
+        case '"':
+        case '\\':
+        case '/':
+          value.push_back(escaped);
+          break;
+        case 'b':
+          value.push_back('\b');
+          break;
+        case 'f':
+          value.push_back('\f');
+          break;
+        case 'n':
+          value.push_back('\n');
+          break;
+        case 'r':
+          value.push_back('\r');
+          break;
+        case 't':
+          value.push_back('\t');
+          break;
+        default:
+          return std::nullopt;
+      }
+    }
+    return std::nullopt;
+  }
+
+  bool SkipString() { return ParseString().has_value(); }
+
+  bool SkipPrimitive() {
+    const std::size_t begin = position_;
+    while (position_ < input_.size() && input_[position_] != ',' &&
+           input_[position_] != ']' && input_[position_] != '}' &&
+           !std::isspace(static_cast<unsigned char>(input_[position_]))) {
+      ++position_;
+    }
+    const std::string_view value = input_.substr(begin, position_ - begin);
+    if (value == "true" || value == "false" || value == "null") return true;
+    double number = 0.0;
+    const auto parsed =
+        std::from_chars(value.data(), value.data() + value.size(), number);
+    return parsed.ec == std::errc() &&
+           parsed.ptr == value.data() + value.size() && std::isfinite(number);
+  }
+
+  bool SkipArray() {
+    if (!Take('[')) return false;
+    SkipSpace();
+    if (Take(']')) return true;
+    while (position_ < input_.size()) {
+      if (input_[position_] == '{' || input_[position_] == '[' ||
+          !SkipValue()) {
+        return false;
+      }
+      SkipSpace();
+      if (Take(']')) return true;
+      if (!Take(',')) return false;
+      SkipSpace();
+    }
+    return false;
+  }
+
+  bool SkipValue() {
+    SkipSpace();
+    if (position_ >= input_.size() || input_[position_] == '{') return false;
+    if (input_[position_] == '"') return SkipString();
+    if (input_[position_] == '[') return SkipArray();
+    return SkipPrimitive();
+  }
+
+  std::string_view input_;
+  std::size_t position_ = 0;
+};
+
+std::string CanonicalObject(const std::map<std::string, std::string>& values) {
+  std::ostringstream output;
+  output << '{';
+  bool first = true;
+  for (const auto& [key, value] : values) {
+    output << (first ? "\n  " : ",\n  ") << '"' << EscapeJson(key)
+           << "\": " << value;
+    first = false;
+  }
+  if (!first) output << '\n';
+  output << '}';
+  return output.str();
+}
+
+std::optional<std::string> DecodeJsonString(std::string_view raw) {
+  const std::string source = "{\"v\":" + std::string(raw) + "}";
+  FlatJsonParser parser(source);
+  auto parsed = parser.Parse();
+  if (!parsed.Ok()) return std::nullopt;
+  std::string_view value = Trim(parsed.Value().values.at("v"));
+  if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
+    return std::nullopt;
+  }
+  // Reuse the parser's escape handling by parsing the string in a small array.
+  std::size_t position = 1;
+  std::string decoded;
+  while (position + 1 < value.size()) {
+    char character = value[position++];
+    if (character != '\\') {
+      decoded.push_back(character);
+      continue;
+    }
+    if (position >= value.size() - 1) return std::nullopt;
+    switch (value[position++]) {
+      case '"':
+        decoded.push_back('"');
+        break;
+      case '\\':
+        decoded.push_back('\\');
+        break;
+      case '/':
+        decoded.push_back('/');
+        break;
+      case 'b':
+        decoded.push_back('\b');
+        break;
+      case 'f':
+        decoded.push_back('\f');
+        break;
+      case 'n':
+        decoded.push_back('\n');
+        break;
+      case 'r':
+        decoded.push_back('\r');
+        break;
+      case 't':
+        decoded.push_back('\t');
+        break;
+      default:
+        return std::nullopt;
+    }
+  }
+  return decoded;
+}
+
+std::optional<bool> DecodeJsonBool(std::string_view raw) {
+  raw = Trim(raw);
+  if (raw == "true") return true;
+  if (raw == "false") return false;
+  return std::nullopt;
+}
+
+std::optional<std::string> DecodeJsonNumber(std::string_view raw) {
+  raw = Trim(raw);
+  double number = 0.0;
+  const auto parsed =
+      std::from_chars(raw.data(), raw.data() + raw.size(), number);
+  if (parsed.ec != std::errc() || parsed.ptr != raw.data() + raw.size() ||
+      !std::isfinite(number)) {
+    return std::nullopt;
+  }
+  return std::string(raw);
+}
+
+std::optional<std::vector<std::string>> DecodeScalarArray(std::string_view raw,
+                                                          bool allow_numbers) {
+  raw = Trim(raw);
+  if (raw.size() < 2 || raw.front() != '[' || raw.back() != ']') {
+    return std::nullopt;
+  }
+  std::vector<std::string> result;
+  std::size_t position = 1;
+  while (position + 1 < raw.size()) {
+    while (position + 1 < raw.size() &&
+           std::isspace(static_cast<unsigned char>(raw[position]))) {
+      ++position;
+    }
+    if (position + 1 >= raw.size()) break;
+    if (raw[position] == '"') {
+      const std::size_t begin = position++;
+      bool escaped = false;
+      while (position < raw.size()) {
+        const char character = raw[position++];
+        if (!escaped && character == '"') break;
+        escaped = !escaped && character == '\\';
+        if (character != '\\') escaped = false;
+      }
+      auto value = DecodeJsonString(raw.substr(begin, position - begin));
+      if (!value) return std::nullopt;
+      result.push_back(std::move(*value));
+    } else {
+      if (!allow_numbers) return std::nullopt;
+      const std::size_t begin = position;
+      while (position < raw.size() && raw[position] != ',' &&
+             raw[position] != ']') {
+        ++position;
+      }
+      auto value = DecodeJsonNumber(raw.substr(begin, position - begin));
+      if (!value) return std::nullopt;
+      result.push_back(std::move(*value));
+    }
+    while (position + 1 < raw.size() &&
+           std::isspace(static_cast<unsigned char>(raw[position]))) {
+      ++position;
+    }
+    if (position + 1 >= raw.size()) break;
+    if (raw[position] != ',') return std::nullopt;
+    ++position;
+  }
+  return result;
+}
+
 bool IsIdentifier(std::string_view value) {
   if (value.empty() ||
       !(std::isalpha(static_cast<unsigned char>(value.front())) ||
@@ -185,14 +479,26 @@ bool ManagedFlowMetrics::Passed() const noexcept {
   }
   return positive(antenna_violations) && positive(slew_violations) &&
          positive(capacitance_violations) && positive(fanout_violations) &&
-         positive(drc_violations) && positive(xor_violations) &&
-         positive(lvs_errors) && (!setup_wns || *setup_wns >= 0.0) &&
+         positive(routing_violations) && positive(drc_violations) &&
+         positive(xor_violations) && positive(lvs_errors) &&
+         (!setup_wns || *setup_wns >= 0.0) &&
          (!setup_tns || *setup_tns >= 0.0) && (!hold_wns || *hold_wns >= 0.0) &&
          (!hold_tns || *hold_tns >= 0.0);
 }
 
 std::string_view OpenLane2Adapter::Name() const noexcept {
   return "OpenLane 2 Classic";
+}
+
+std::vector<ManagedFlowStageInfo> OpenLane2Adapter::Stages() const {
+  return {{core::StageId::kRtlInput, "Verilator.Lint", {}, {}},
+          {core::StageId::kSynthesis, "Yosys.Synthesis", {}, {}},
+          {core::StageId::kFloorplan, "OpenROAD.Floorplan", {}, {}},
+          {core::StageId::kPlacement, "OpenROAD.GlobalPlacement", {}, {}},
+          {core::StageId::kClockTreeSynthesis, "OpenROAD.CTS", {}, {}},
+          {core::StageId::kRouting, "OpenROAD.DetailedRouting", {}, {}},
+          {core::StageId::kDrcLvs, "Magic.DRC", {}, {}},
+          {core::StageId::kFinalOutputs, "FinalSnapshot", {}, {}}};
 }
 
 runtime::WslCommand OpenLane2Adapter::BuildProbeCommand() const {
@@ -225,83 +531,409 @@ core::Status OpenLane2Adapter::ValidateAdvancedOverrides(
     return {core::ErrorCode::kInvalidArgument,
             "OpenLane advanced overrides exceed 64 KiB", 0};
   }
-  json = Trim(json);
-  if (json.size() < 2 || json.front() != '{' || json.back() != '}') {
-    return {core::ErrorCode::kInvalidArgument,
-            "OpenLane advanced overrides must be a JSON object", 0};
-  }
-  static const std::array<std::string_view, 17> kReserved = {
-      "DESIGN_NAME",
-      "VERILOG_FILES",
-      "VERILOG_INCLUDE_DIRS",
-      "VERILOG_DEFINES",
-      "SYNTH_PARAMETERS",
-      "PDK",
-      "STD_CELL_LIBRARY",
-      "CLOCK_PORT",
-      "CLOCK_PERIOD",
-      "PNR_SDC_FILE",
-      "SIGNOFF_SDC_FILE",
-      "FALLBACK_SDC_FILE",
-      "FP_CORE_UTIL",
-      "PL_TARGET_DENSITY_PCT",
-      "FP_SIZING",
-      "DIE_AREA",
-      "RUN_TAG"};
-  bool in_string = false;
-  bool escaped = false;
-  int array_depth = 0;
-  for (std::size_t index = 1; index + 1 < json.size(); ++index) {
-    const char character = json[index];
-    if (in_string) {
-      if (escaped) {
-        escaped = false;
-      } else if (character == '\\') {
-        escaped = true;
-      } else if (character == '"') {
-        in_string = false;
-      }
-      continue;
-    }
-    if (character == '"') {
-      in_string = true;
-    } else if (character == '{' || character == '}') {
+  auto parsed = FlatJsonParser(json).Parse();
+  if (!parsed.Ok()) return parsed.GetStatus();
+  static const std::set<std::string_view> kReserved = {"DESIGN_NAME",
+                                                       "VERILOG_FILES",
+                                                       "VERILOG_INCLUDE_DIRS",
+                                                       "VERILOG_DEFINES",
+                                                       "SYNTH_PARAMETERS",
+                                                       "PDK",
+                                                       "STD_CELL_LIBRARY",
+                                                       "CLOCK_PORT",
+                                                       "CLOCK_PERIOD",
+                                                       "PNR_SDC_FILE",
+                                                       "SIGNOFF_SDC_FILE",
+                                                       "FALLBACK_SDC_FILE",
+                                                       "FP_CORE_UTIL",
+                                                       "PL_TARGET_DENSITY_PCT",
+                                                       "FP_SIZING",
+                                                       "DIE_AREA",
+                                                       "CORE_AREA",
+                                                       "FP_TAPCELL_DIST",
+                                                       "FP_PDN_MULTILAYER",
+                                                       "FP_PDN_CORE_RING",
+                                                       "FP_PDN_ENABLE_RAILS",
+                                                       "FP_PDN_VWIDTH",
+                                                       "FP_PDN_HWIDTH",
+                                                       "FP_PDN_VSPACING",
+                                                       "FP_PDN_HSPACING",
+                                                       "FP_PDN_VPITCH",
+                                                       "FP_PDN_HPITCH",
+                                                       "FP_PDN_VOFFSET",
+                                                       "FP_PDN_HOFFSET",
+                                                       "FP_PPL_MODE",
+                                                       "FP_IO_MIN_DISTANCE",
+                                                       "FP_IO_VLENGTH",
+                                                       "FP_IO_HLENGTH",
+                                                       "FP_IO_VTHICKNESS_MULT",
+                                                       "FP_IO_HTHICKNESS_MULT",
+                                                       "FP_IO_VEXTEND",
+                                                       "FP_IO_HEXTEND",
+                                                       "FP_IO_VLAYER",
+                                                       "FP_IO_HLAYER",
+                                                       "FP_PIN_ORDER_CFG",
+                                                       "ERRORS_ON_UNMATCHED_IO",
+                                                       "RUN_TAG"};
+  for (const auto& [key, value] : parsed.Value().values) {
+    if (kReserved.contains(key)) {
       return {core::ErrorCode::kInvalidArgument,
-              "Nested OpenLane override objects are not allowed", 0};
-    } else if (character == '[') {
-      ++array_depth;
-    } else if (character == ']') {
-      --array_depth;
-      if (array_depth < 0) {
-        return {core::ErrorCode::kInvalidArgument,
-                "OpenLane advanced overrides are invalid JSON", 0};
-      }
+              "OpenLane advanced overrides contain reserved key " + key, 0};
     }
-  }
-  if (in_string || array_depth != 0) {
-    return {core::ErrorCode::kInvalidArgument,
-            "OpenLane advanced overrides are invalid JSON", 0};
-  }
-  for (std::string_view key : kReserved) {
-    if (json.find("\"" + std::string(key) + "\"") != std::string_view::npos) {
+    if (key.starts_with("RUN_")) {
       return {core::ErrorCode::kInvalidArgument,
-              "OpenLane advanced overrides contain a reserved key", 0};
+              "OpenLane RUN_* variables are managed by Design++", 0};
     }
-  }
-  if (json.find("\"RUN_") != std::string_view::npos) {
-    return {core::ErrorCode::kInvalidArgument,
-            "OpenLane RUN_* variables are managed by Design++", 0};
-  }
-  const std::string lower(json);
-  if (lower.find("dir::") != std::string::npos ||
-      lower.find("/home/") != std::string::npos ||
-      lower.find("/mnt/") != std::string::npos ||
-      lower.find(":\\") != std::string::npos ||
-      lower.find("../") != std::string::npos) {
-    return {core::ErrorCode::kInvalidArgument,
-            "Path-like OpenLane override values are not allowed", 0};
+    std::string lower(value);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](char character) {
+                     return static_cast<char>(
+                         std::tolower(static_cast<unsigned char>(character)));
+                   });
+    if (lower.find("dir::") != std::string::npos ||
+        lower.find("/home/") != std::string::npos ||
+        lower.find("/mnt/") != std::string::npos ||
+        lower.find(":\\") != std::string::npos ||
+        lower.find("../") != std::string::npos) {
+      return {core::ErrorCode::kInvalidArgument,
+              "Path-like OpenLane override values are not allowed", 0};
+    }
   }
   return core::Status::Success();
+}
+
+core::Result<std::string> OpenLane2Adapter::BuildPinOrderConfiguration(
+    const core::PhysicalImplementationConfiguration& configuration) const {
+  const core::Status validation =
+      core::ValidatePhysicalImplementationConfiguration(configuration);
+  if (!validation.Ok()) return validation;
+  std::ostringstream output;
+  const auto write_side = [&output](std::string_view name,
+                                    const core::IoPinSideConfiguration& side) {
+    if (side.entries.empty()) return;
+    output << '#' << name << '\n';
+    if (side.minimum_distance_um) {
+      output << "@min_distance=" << *side.minimum_distance_um << '\n';
+    }
+    output << (side.bit_major ? "@bit_major\n" : "@bus_major\n");
+    for (const std::string& entry : side.entries) output << entry << '\n';
+    output << '\n';
+  };
+  const auto& io = configuration.io_placement;
+  write_side("N", io.north);
+  write_side("S", io.south);
+  write_side("E", io.east);
+  write_side("W", io.west);
+  return output.str();
+}
+
+core::Result<std::string> OpenLane2Adapter::EncodeEditableConfiguration(
+    const core::PhysicalImplementationConfiguration& configuration) const {
+  const core::Status validation =
+      core::ValidatePhysicalImplementationConfiguration(configuration);
+  if (!validation.Ok()) return validation;
+  auto advanced = FlatJsonParser(configuration.advanced_overrides_json).Parse();
+  if (!advanced.Ok()) return advanced.GetStatus();
+  auto values = std::move(advanced).Value().values;
+  const auto string_value = [](std::string_view value) {
+    return "\"" + EscapeJson(value) + "\"";
+  };
+  const auto string_array =
+      [&string_value](const std::vector<std::string>& items) {
+        std::ostringstream output;
+        output << '[';
+        for (std::size_t index = 0; index < items.size(); ++index) {
+          if (index != 0) output << ", ";
+          output << string_value(items[index]);
+        }
+        output << ']';
+        return output.str();
+      };
+  values["PDK"] = string_value(configuration.pdk);
+  values["STD_CELL_LIBRARY"] =
+      string_value(configuration.standard_cell_library);
+  values["CLOCK_PORT"] = string_array(configuration.clock_ports);
+  if (!configuration.clock_period_ns.empty()) {
+    values["CLOCK_PERIOD"] = configuration.clock_period_ns;
+  }
+  values["FP_CORE_UTIL"] =
+      std::to_string(configuration.core_utilization_percent);
+  const auto optional_number =
+      [&values](std::string_view key, const std::optional<std::string>& value) {
+        if (value) values[std::string(key)] = *value;
+      };
+  optional_number("PL_TARGET_DENSITY_PCT",
+                  configuration.placement_density_percent);
+  if (!configuration.die_area.empty()) {
+    values["DIE_AREA"] = string_array(configuration.die_area);
+  }
+  if (!configuration.core_area.empty()) {
+    values["CORE_AREA"] = string_array(configuration.core_area);
+  }
+  optional_number("FP_TAPCELL_DIST", configuration.tap_cell_distance_um);
+  const auto& pdn = configuration.power_distribution;
+  values["FP_PDN_MULTILAYER"] = pdn.multilayer ? "true" : "false";
+  values["FP_PDN_CORE_RING"] = pdn.core_ring ? "true" : "false";
+  values["FP_PDN_ENABLE_RAILS"] = pdn.enable_rails ? "true" : "false";
+  optional_number("FP_PDN_VWIDTH", pdn.vertical_width_um);
+  optional_number("FP_PDN_HWIDTH", pdn.horizontal_width_um);
+  optional_number("FP_PDN_VSPACING", pdn.vertical_spacing_um);
+  optional_number("FP_PDN_HSPACING", pdn.horizontal_spacing_um);
+  optional_number("FP_PDN_VPITCH", pdn.vertical_pitch_um);
+  optional_number("FP_PDN_HPITCH", pdn.horizontal_pitch_um);
+  optional_number("FP_PDN_VOFFSET", pdn.vertical_offset_um);
+  optional_number("FP_PDN_HOFFSET", pdn.horizontal_offset_um);
+  const auto& io = configuration.io_placement;
+  values["FP_PPL_MODE"] = string_value(io.algorithm);
+  values["ERRORS_ON_UNMATCHED_IO"] = string_value(io.unmatched_policy);
+  optional_number("FP_IO_MIN_DISTANCE", io.minimum_distance_um);
+  optional_number("FP_IO_VLENGTH", io.vertical_length_um);
+  optional_number("FP_IO_HLENGTH", io.horizontal_length_um);
+  optional_number("FP_IO_VTHICKNESS_MULT", io.vertical_thickness_multiplier);
+  optional_number("FP_IO_HTHICKNESS_MULT", io.horizontal_thickness_multiplier);
+  optional_number("FP_IO_VEXTEND", io.vertical_extension_um);
+  optional_number("FP_IO_HEXTEND", io.horizontal_extension_um);
+  if (io.vertical_layer) {
+    values["FP_IO_VLAYER"] = string_value(*io.vertical_layer);
+  }
+  if (io.horizontal_layer) {
+    values["FP_IO_HLAYER"] = string_value(*io.horizontal_layer);
+  }
+  const std::pair<const char*, const char*> inherited[] = {
+      {"PDK", "pdk"},
+      {"STD_CELL_LIBRARY", "standard_cell_library"},
+      {"CLOCK_PERIOD", "clock_period_ns"},
+      {"FP_CORE_UTIL", "core_utilization_percent"},
+      {"FP_PDN_MULTILAYER", "pdn.multilayer"},
+      {"FP_PDN_CORE_RING", "pdn.core_ring"},
+      {"FP_PDN_ENABLE_RAILS", "pdn.enable_rails"},
+      {"FP_PPL_MODE", "io.algorithm"},
+      {"ERRORS_ON_UNMATCHED_IO", "io.unmatched_policy"}};
+  for (const auto& [key, field] : inherited) {
+    if (core::UsesAutomaticValue(configuration, field)) values.erase(key);
+  }
+  return CanonicalObject(values);
+}
+
+core::Result<core::PhysicalImplementationConfiguration>
+OpenLane2Adapter::ApplyEditableConfiguration(
+    std::string_view json,
+    const core::PhysicalImplementationConfiguration& current) const {
+  if (json.size() > 64 * 1024) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "OpenLane editable JSON exceeds 64 KiB", 0};
+  }
+  auto parsed = FlatJsonParser(json).Parse();
+  if (!parsed.Ok()) return parsed.GetStatus();
+  auto values = std::move(parsed).Value().values;
+  // The editable snapshot may be copied from a resolved OpenLane config.
+  // Ignore this run-owned path without reading it or persisting it; Design++
+  // deterministically regenerates the file from structured I/O settings.
+  values.erase("FP_PIN_ORDER_CFG");
+  static const std::set<std::string_view> kManaged = {"DESIGN_NAME",
+                                                      "VERILOG_FILES",
+                                                      "VERILOG_INCLUDE_DIRS",
+                                                      "VERILOG_DEFINES",
+                                                      "SYNTH_PARAMETERS",
+                                                      "PNR_SDC_FILE",
+                                                      "SIGNOFF_SDC_FILE",
+                                                      "FALLBACK_SDC_FILE",
+                                                      "FP_PIN_ORDER_CFG",
+                                                      "FP_SIZING",
+                                                      "RUN_TAG"};
+  for (const auto& [key, value] : values) {
+    if (kManaged.contains(key) || key.starts_with("RUN_")) {
+      return core::Status{core::ErrorCode::kInvalidArgument,
+                          "OpenLane key " + key + " is managed by Design++", 0};
+    }
+  }
+  core::PhysicalImplementationConfiguration result = current;
+  const auto defaults_json = EncodeEditableConfiguration({});
+  if (!defaults_json.Ok()) return defaults_json.GetStatus();
+  auto defaults = FlatJsonParser(defaults_json.Value()).Parse();
+  if (!defaults.Ok()) return defaults.GetStatus();
+  const std::pair<const char*, const char*> inherited[] = {
+      {"PDK", "pdk"},
+      {"STD_CELL_LIBRARY", "standard_cell_library"},
+      {"CLOCK_PERIOD", "clock_period_ns"},
+      {"FP_CORE_UTIL", "core_utilization_percent"},
+      {"FP_PDN_MULTILAYER", "pdn.multilayer"},
+      {"FP_PDN_CORE_RING", "pdn.core_ring"},
+      {"FP_PDN_ENABLE_RAILS", "pdn.enable_rails"},
+      {"FP_PPL_MODE", "io.algorithm"},
+      {"ERRORS_ON_UNMATCHED_IO", "io.unmatched_policy"}};
+  for (const auto& [key, field] : inherited) {
+    std::erase(result.automatic_fields, std::string(field));
+    const auto found = values.find(key);
+    if (found == values.end() || found->second == "null" ||
+        found->second == "\"\"") {
+      result.automatic_fields.emplace_back(field);
+      values[key] = defaults.Value().values.at(key);
+    }
+  }
+  std::sort(result.automatic_fields.begin(), result.automatic_fields.end());
+  const auto take_string = [&values](std::string_view key, std::string* output,
+                                     bool required) {
+    const auto found = values.find(std::string(key));
+    if (found == values.end()) return !required;
+    auto value = DecodeJsonString(found->second);
+    if (!value) return false;
+    *output = std::move(*value);
+    values.erase(found);
+    return true;
+  };
+  const auto take_number = [&values](std::string_view key,
+                                     std::optional<std::string>* output) {
+    const auto found = values.find(std::string(key));
+    if (found == values.end()) {
+      output->reset();
+      return true;
+    }
+    auto value = DecodeJsonNumber(found->second);
+    if (found->second == "null" || found->second == "\"\"") {
+      output->reset();
+      values.erase(found);
+      return true;
+    }
+    if (!value) return false;
+    *output = std::move(*value);
+    values.erase(found);
+    return true;
+  };
+  const auto take_bool = [&values](std::string_view key, bool* output) {
+    const auto found = values.find(std::string(key));
+    if (found == values.end()) return false;
+    auto value = DecodeJsonBool(found->second);
+    if (!value) return false;
+    *output = *value;
+    values.erase(found);
+    return true;
+  };
+  const auto take_array = [&values](std::string_view key,
+                                    std::vector<std::string>* output,
+                                    bool allow_numbers) {
+    const auto found = values.find(std::string(key));
+    if (found == values.end()) {
+      output->clear();
+      return true;
+    }
+    auto decoded = DecodeScalarArray(found->second, allow_numbers);
+    if (!decoded) return false;
+    *output = std::move(*decoded);
+    values.erase(found);
+    return true;
+  };
+  std::string utilization;
+  if (!take_string("PDK", &result.pdk, true)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "PDK must be a string", 0};
+  }
+  if (!take_string("STD_CELL_LIBRARY", &result.standard_cell_library, true)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "STD_CELL_LIBRARY must be a string", 0};
+  }
+  if (!take_array("CLOCK_PORT", &result.clock_ports, false)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "CLOCK_PORT must be a flat string array", 0};
+  }
+  const auto required_number = [&values](std::string_view key,
+                                         std::string* output) {
+    const auto found = values.find(std::string(key));
+    if (found == values.end()) return false;
+    auto value = DecodeJsonNumber(found->second);
+    if (!value) return false;
+    *output = std::move(*value);
+    values.erase(found);
+    return true;
+  };
+  const auto period = values.find("CLOCK_PERIOD");
+  if (period == values.end()) {
+    result.clock_period_ns.clear();
+  } else {
+    auto decoded = DecodeJsonNumber(period->second);
+    if (!decoded) {
+      return core::Status{core::ErrorCode::kInvalidArgument,
+                          "CLOCK_PERIOD must be a number", 0};
+    }
+    result.clock_period_ns = std::move(*decoded);
+    values.erase(period);
+  }
+  if (!required_number("FP_CORE_UTIL", &utilization)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "FP_CORE_UTIL must be a number", 0};
+  }
+  char* utilization_end = nullptr;
+  const unsigned long parsed_utilization =
+      std::strtoul(utilization.c_str(), &utilization_end, 10);
+  if (utilization_end != utilization.c_str() + utilization.size()) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "FP_CORE_UTIL must be an integer", 0};
+  }
+  result.core_utilization_percent =
+      static_cast<std::uint32_t>(parsed_utilization);
+  if (!take_number("PL_TARGET_DENSITY_PCT",
+                   &result.placement_density_percent) ||
+      !take_array("DIE_AREA", &result.die_area, true) ||
+      !take_array("CORE_AREA", &result.core_area, true) ||
+      !take_number("FP_TAPCELL_DIST", &result.tap_cell_distance_um)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "OpenLane floorplan variables have wrong types", 0};
+  }
+  auto& pdn = result.power_distribution;
+  if (!take_bool("FP_PDN_MULTILAYER", &pdn.multilayer) ||
+      !take_bool("FP_PDN_CORE_RING", &pdn.core_ring) ||
+      !take_bool("FP_PDN_ENABLE_RAILS", &pdn.enable_rails) ||
+      !take_number("FP_PDN_VWIDTH", &pdn.vertical_width_um) ||
+      !take_number("FP_PDN_HWIDTH", &pdn.horizontal_width_um) ||
+      !take_number("FP_PDN_VSPACING", &pdn.vertical_spacing_um) ||
+      !take_number("FP_PDN_HSPACING", &pdn.horizontal_spacing_um) ||
+      !take_number("FP_PDN_VPITCH", &pdn.vertical_pitch_um) ||
+      !take_number("FP_PDN_HPITCH", &pdn.horizontal_pitch_um) ||
+      !take_number("FP_PDN_VOFFSET", &pdn.vertical_offset_um) ||
+      !take_number("FP_PDN_HOFFSET", &pdn.horizontal_offset_um)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "OpenLane PDN variables have wrong types", 0};
+  }
+  auto& io = result.io_placement;
+  if (!take_string("FP_PPL_MODE", &io.algorithm, true) ||
+      !take_string("ERRORS_ON_UNMATCHED_IO", &io.unmatched_policy, true) ||
+      !take_number("FP_IO_MIN_DISTANCE", &io.minimum_distance_um) ||
+      !take_number("FP_IO_VLENGTH", &io.vertical_length_um) ||
+      !take_number("FP_IO_HLENGTH", &io.horizontal_length_um) ||
+      !take_number("FP_IO_VTHICKNESS_MULT",
+                   &io.vertical_thickness_multiplier) ||
+      !take_number("FP_IO_HTHICKNESS_MULT",
+                   &io.horizontal_thickness_multiplier) ||
+      !take_number("FP_IO_VEXTEND", &io.vertical_extension_um) ||
+      !take_number("FP_IO_HEXTEND", &io.horizontal_extension_um)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "OpenLane I/O variables have wrong types", 0};
+  }
+  io.vertical_layer.reset();
+  io.horizontal_layer.reset();
+  std::string layer;
+  if (!take_string("FP_IO_VLAYER", &layer, false)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "FP_IO_VLAYER must be a string", 0};
+  }
+  if (!layer.empty()) io.vertical_layer = layer;
+  layer.clear();
+  if (!take_string("FP_IO_HLAYER", &layer, false)) {
+    return core::Status{core::ErrorCode::kInvalidArgument,
+                        "FP_IO_HLAYER must be a string", 0};
+  }
+  if (!layer.empty()) io.horizontal_layer = layer;
+  result.advanced_overrides_json = CanonicalObject(values);
+  core::Status validation =
+      ValidateAdvancedOverrides(result.advanced_overrides_json);
+  if (validation.Ok()) {
+    validation = core::ValidatePhysicalImplementationConfiguration(result);
+  }
+  return validation.Ok()
+             ? core::Result<core::PhysicalImplementationConfiguration>(
+                   std::move(result))
+             : core::Result<core::PhysicalImplementationConfiguration>(
+                   std::move(validation));
 }
 
 core::Status OpenLane2Adapter::Validate(const OpenLaneRequest& request) const {
@@ -330,12 +962,17 @@ core::Status OpenLane2Adapter::Validate(const OpenLaneRequest& request) const {
     return {core::ErrorCode::kInvalidArgument,
             "OpenLane resume checkpoint hash is invalid", 0};
   }
-  return ValidateAdvancedOverrides(
-      request.configuration.advanced_overrides_json);
+  core::Status status =
+      core::ValidatePhysicalImplementationConfiguration(request.configuration);
+  return status.Ok() ? ValidateAdvancedOverrides(
+                           request.configuration.advanced_overrides_json)
+                     : status;
 }
 
 core::Result<OpenLanePlan> OpenLane2Adapter::BuildPlan(
-    const OpenLaneRequest& request) const {
+    const OpenLaneRequest& input) const {
+  auto request = input;
+  request.configuration = core::ResolvePhysicalDefaults(input.configuration);
   core::Status status = Validate(request);
   if (!status.Ok()) return status;
 
@@ -391,8 +1028,11 @@ core::Result<OpenLanePlan> OpenLane2Adapter::BuildPlan(
     }
     config << ']';
   }
-  config << ",\n  \"CLOCK_PERIOD\": " << request.configuration.clock_period_ns
-         << ",\n  \"FP_CORE_UTIL\": "
+  if (!request.configuration.clock_period_ns.empty()) {
+    config << ",\n  \"CLOCK_PERIOD\": "
+           << request.configuration.clock_period_ns;
+  }
+  config << ",\n  \"FP_CORE_UTIL\": "
          << request.configuration.core_utilization_percent;
   if (request.configuration.placement_density_percent) {
     config << ",\n  \"PL_TARGET_DENSITY_PCT\": "
@@ -407,6 +1047,72 @@ core::Result<OpenLanePlan> OpenLane2Adapter::BuildPlan(
     }
     config << ']';
   }
+  if (request.configuration.core_area.size() == 4) {
+    config << ",\n  \"CORE_AREA\": [";
+    for (std::size_t index = 0; index < 4; ++index) {
+      if (index != 0) config << ", ";
+      config << request.configuration.core_area[index];
+    }
+    config << ']';
+  }
+  if (request.configuration.tap_cell_distance_um) {
+    config << ",\n  \"FP_TAPCELL_DIST\": "
+           << *request.configuration.tap_cell_distance_um;
+  }
+  const core::IoPlacementConfiguration& io = request.configuration.io_placement;
+  config << ",\n  \"FP_PPL_MODE\": \"" << EscapeJson(io.algorithm) << '"'
+         << ",\n  \"ERRORS_ON_UNMATCHED_IO\": \""
+         << EscapeJson(io.unmatched_policy) << '"';
+  const auto append_io_decimal = [&config](
+                                     std::string_view name,
+                                     const std::optional<std::string>& value) {
+    if (value) config << ",\n  \"" << name << "\": " << *value;
+  };
+  append_io_decimal("FP_IO_MIN_DISTANCE", io.minimum_distance_um);
+  append_io_decimal("FP_IO_VLENGTH", io.vertical_length_um);
+  append_io_decimal("FP_IO_HLENGTH", io.horizontal_length_um);
+  append_io_decimal("FP_IO_VTHICKNESS_MULT", io.vertical_thickness_multiplier);
+  append_io_decimal("FP_IO_HTHICKNESS_MULT",
+                    io.horizontal_thickness_multiplier);
+  append_io_decimal("FP_IO_VEXTEND", io.vertical_extension_um);
+  append_io_decimal("FP_IO_HEXTEND", io.horizontal_extension_um);
+  if (io.vertical_layer) {
+    config << ",\n  \"FP_IO_VLAYER\": \"" << EscapeJson(*io.vertical_layer)
+           << '"';
+  }
+  if (io.horizontal_layer) {
+    config << ",\n  \"FP_IO_HLAYER\": \"" << EscapeJson(*io.horizontal_layer)
+           << '"';
+  }
+  if (!request.pin_order_cfg.empty()) {
+    config << ",\n  \"FP_PIN_ORDER_CFG\": \"dir::constraints/"
+           << EscapeJson(request.pin_order_cfg.filename().generic_string())
+           << '"';
+  }
+  const core::PowerDistributionConfiguration& pdn =
+      request.configuration.power_distribution;
+  if (!core::UsesAutomaticValue(request.configuration, "pdn.multilayer"))
+    config << ",\n  \"FP_PDN_MULTILAYER\": "
+           << (pdn.multilayer ? "true" : "false");
+  if (!core::UsesAutomaticValue(request.configuration, "pdn.core_ring"))
+    config << ",\n  \"FP_PDN_CORE_RING\": "
+           << (pdn.core_ring ? "true" : "false");
+  if (!core::UsesAutomaticValue(request.configuration, "pdn.enable_rails"))
+    config << ",\n  \"FP_PDN_ENABLE_RAILS\": "
+           << (pdn.enable_rails ? "true" : "false");
+  const auto append_pdn_decimal = [&config](
+                                      std::string_view name,
+                                      const std::optional<std::string>& value) {
+    if (value) config << ",\n  \"" << name << "\": " << *value;
+  };
+  append_pdn_decimal("FP_PDN_VWIDTH", pdn.vertical_width_um);
+  append_pdn_decimal("FP_PDN_HWIDTH", pdn.horizontal_width_um);
+  append_pdn_decimal("FP_PDN_VSPACING", pdn.vertical_spacing_um);
+  append_pdn_decimal("FP_PDN_HSPACING", pdn.horizontal_spacing_um);
+  append_pdn_decimal("FP_PDN_VPITCH", pdn.vertical_pitch_um);
+  append_pdn_decimal("FP_PDN_HPITCH", pdn.horizontal_pitch_um);
+  append_pdn_decimal("FP_PDN_VOFFSET", pdn.vertical_offset_um);
+  append_pdn_decimal("FP_PDN_HOFFSET", pdn.horizontal_offset_um);
   if (!request.pnr_sdc.empty()) {
     AppendJsonString(
         &config, "PNR_SDC_FILE",
@@ -581,10 +1287,17 @@ std::vector<core::Diagnostic> OpenLane2Adapter::ParseDiagnostics(
     }
     core::Diagnostic diagnostic;
     diagnostic.severity = severity;
-    diagnostic.code = severity == core::DiagnosticSeverity::kError
+    const bool pdn_too_small = lower.find("pdn-0185") != std::string::npos;
+    diagnostic.code = pdn_too_small ? "OPENLANE-PDN-TOO-SMALL"
+                      : severity == core::DiagnosticSeverity::kError
                           ? "OPENLANE-ERROR"
                           : "OPENLANE-WARNING";
-    diagnostic.message = line;
+    diagnostic.message =
+        pdn_too_small
+            ? line +
+                  " Set Layout Setup > Die area to a larger absolute area "
+                  "(for example 0,0,100,100 for a tiny sky130 design)."
+            : line;
     diagnostics.push_back(std::move(diagnostic));
   }
   return diagnostics;
@@ -620,6 +1333,34 @@ core::Result<ManagedFlowMetrics> OpenLane2Adapter::ParseMetrics(
       JsonNumber(metrics_json, "design__max_cap_violation__count");
   metrics.fanout_violations =
       JsonNumber(metrics_json, "design__max_fanout_violation__count");
+  metrics.global_route_congestion =
+      JsonNumber(metrics_json, "route__congestion__global");
+  if (!metrics.global_route_congestion) {
+    metrics.global_route_congestion =
+        JsonNumber(metrics_json, "route__congestion__global__total");
+  }
+  metrics.detailed_route_congestion =
+      JsonNumber(metrics_json, "route__congestion__detailed");
+  if (!metrics.detailed_route_congestion) {
+    metrics.detailed_route_congestion =
+        JsonNumber(metrics_json, "route__congestion__detailed__total");
+  }
+  metrics.global_route_overflow =
+      JsonNumber(metrics_json, "route__overflow__global");
+  if (!metrics.global_route_overflow) {
+    metrics.global_route_overflow =
+        JsonNumber(metrics_json, "route__congestion__global__overflow");
+  }
+  metrics.detailed_route_overflow =
+      JsonNumber(metrics_json, "route__overflow__detailed");
+  if (!metrics.detailed_route_overflow) {
+    metrics.detailed_route_overflow =
+        JsonNumber(metrics_json, "route__congestion__detailed__overflow");
+  }
+  metrics.routing_violations =
+      JsonNumber(metrics_json, "route__violation__count");
+  metrics.runtime_seconds = JsonNumber(metrics_json, "flow__runtime_sec");
+  metrics.peak_memory_mb = JsonNumber(metrics_json, "flow__peak_memory_mb");
   metrics.drc_violations = JsonNumber(metrics_json, "magic__drc_error__count");
   metrics.xor_violations =
       JsonNumber(metrics_json, "klayout__xor_error__count");

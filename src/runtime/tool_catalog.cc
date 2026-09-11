@@ -2,6 +2,8 @@
 
 #include "designpp/runtime/tool_catalog.h"
 
+#include <cwctype>
+#include <sstream>
 #include <utility>
 
 #include "designpp/runtime/wsl_executor.h"
@@ -63,7 +65,142 @@ ProcessRequest WebView2ProbeRequest() {
   return request;
 }
 
+ToolDefinition MakeManagedTool(ToolId id, std::wstring name,
+                               std::wstring provider) {
+  // Inventory is intentionally read-only. The completion marker is written only
+  // after the explicit preparation flow has passed its capability checks.
+  return MakeTool(
+      id, std::move(name), L"Managed environment inventory", L"/bin/bash",
+      {L"-lc",
+       L"root=\"$HOME/.designpp/toolchains/$1\"; "
+       L"if [ ! -d \"$root\" ]; then "
+       L"printf '%s\\n' DESIGNPP_ENVIRONMENT_MISSING; exit 44; fi; "
+       L"marker=\"$root/.designpp-environment\"; "
+       L"if [ ! -f \"$marker\" ]; then "
+       L"printf '%s\\n' DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; "
+       L"fi; "
+       L"marker_provider=$(sed -n 's/^provider=//p' \"$marker\"); "
+       L"version=$(sed -n 's/^version=//p' \"$marker\"); "
+       L"commit=$(sed -n 's/^commit=//p' \"$marker\"); "
+       L"test \"$marker_provider\" = \"$1\" || { printf '%s\\n' "
+       L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; }; "
+       L"case \"$marker_provider:$version:$commit\" in "
+       L"\"$1\":*[!0-9A-Za-z._+Q-]*:*|\"$1\"::*|\"$1\":*:) "
+       L"printf '%s\\n' DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78;; "
+       L"esac; "
+       L"test \"$(git -C \"$root\" rev-parse HEAD 2>/dev/null)\" = "
+       L"\"$commit\" || { printf '%s\\n' "
+       L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; }; "
+       L"if [ \"$1\" = orfs ]; then "
+       L"test \"$commit\" = 036d106273e66855cd5214d49518fd0f0df7de61 "
+       L"&& test -f \"$root/flow/Makefile\" "
+       L"&& test \"$(git -C \"$root/tools/OpenROAD\" rev-parse HEAD "
+       L"2>/dev/null)\" = 0e2d771c5ec38f232493c2afea738ea0200cb972 "
+       L"&& test \"$(git -C \"$root/tools/yosys\" rev-parse HEAD "
+       L"2>/dev/null)\" = d3e297fcd479247322f83d14f42b3556db7acdfb "
+       L"&& test \"$(git -C \"$root/tools/eqy\" rev-parse HEAD "
+       L"2>/dev/null)\" = eff96db01293848b993651caa52d747f191be02e "
+       L"|| { printf '%s\\n' DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; "
+       L"exit 78; }; "
+       L"elif [ \"$1\" = openlane2 ]; then "
+       L"test -f \"$root/shell.nix\" || { printf '%s\\n' "
+       L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; }; fi; "
+       L"printf 'DESIGNPP_MANAGED_VERSION=%s\\n' \"$version\"",
+       L"designpp-managed-inventory", provider},
+      InstallMethod::kManagedFlow, L"Existing environment / unverified");
+}
+
 }  // namespace
+
+std::wstring ParseToolVersion(ToolId id, std::wstring_view output) {
+  if (output.size() > 65536) return {};
+  std::wistringstream lines{std::wstring(output)};
+  std::wstring line;
+  while (std::getline(lines, line)) {
+    const auto start = line.find_first_not_of(L" \t\r");
+    if (start == std::wstring::npos) continue;
+    line.erase(0, start);
+    constexpr std::wstring_view kManagedVersionPrefix =
+        L"DESIGNPP_MANAGED_VERSION=";
+    const bool managed_tool = id == ToolId::kOpenSta ||
+                              id == ToolId::kOpenRoad ||
+                              id == ToolId::kOpenLane2 || id == ToolId::kOrfs;
+    if (managed_tool && line.starts_with(kManagedVersionPrefix)) {
+      std::wstring version = line.substr(kManagedVersionPrefix.size());
+      if (!version.empty() &&
+          version.find_first_not_of(L"0123456789abcdefghijklmnopqrstuvwxyzABCDE"
+                                    L"FGHIJKLMNOPQRSTUVWXYZ.-+_:") ==
+              std::wstring::npos) {
+        return version;
+      }
+      continue;
+    }
+    if (id == ToolId::kNix && line.starts_with(L"nix (")) {
+      const auto close = line.find(L") ");
+      if (close != std::wstring::npos) {
+        std::wstring version = line.substr(close + 2);
+        const auto end = version.find_first_of(L" \t\r,");
+        if (end != std::wstring::npos) version.resize(end);
+        if (!version.empty() && std::iswdigit(version.front()) &&
+            version.find(L'.') != std::wstring::npos &&
+            version.find_first_not_of(L"0123456789abcdefghijklmnopqrstuvwxyzABC"
+                                      L"DEFGHIJKLMNOPQRSTUVWXYZ.-+_:") ==
+                std::wstring::npos) {
+          return version;
+        }
+      }
+      continue;
+    }
+    const wchar_t* prefix = nullptr;
+    switch (id) {
+      case ToolId::kVerilator:
+        prefix = L"Verilator ";
+        break;
+      case ToolId::kIcarusVerilog:
+        prefix = L"Icarus Verilog version ";
+        break;
+      case ToolId::kYosys:
+        prefix = L"Yosys ";
+        break;
+      case ToolId::kCocotb:
+        prefix = L"Version: ";
+        break;
+      case ToolId::kKlayout:
+        prefix = L"KLayout ";
+        break;
+      case ToolId::kGtkWave:
+        prefix = L"GTKWave Analyzer v";
+        break;
+      case ToolId::kDocker:
+        prefix = L"Docker version ";
+        break;
+      case ToolId::kNix:
+        prefix = L"nix (Nix) ";
+        break;
+      default:
+        break;
+    }
+    if (prefix) {
+      if (!line.starts_with(prefix)) continue;
+      line.erase(0, std::wstring_view(prefix).size());
+    } else if (id != ToolId::kWebView2 && id != ToolId::kNetgen &&
+               id != ToolId::kMagic && id != ToolId::kOpenSta &&
+               id != ToolId::kOpenRoad) {
+      continue;
+    }
+    const auto end = line.find_first_of(L" \t\r,");
+    const std::wstring version = line.substr(0, end);
+    if (version.empty() || !std::iswdigit(version.front()) ||
+        version.find(L'.') == std::wstring::npos)
+      continue;
+    if (version.find_first_not_of(L"0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+                                  L"HIJKLMNOPQRSTUVWXYZ.-+_:~") !=
+        std::wstring::npos)
+      continue;
+    return version;
+  }
+  return {};
+}
 
 std::vector<ToolDefinition> BuildToolCatalog() {
   std::vector<ToolDefinition> tools;
@@ -89,22 +226,12 @@ std::vector<ToolDefinition> BuildToolCatalog() {
   tools.push_back(MakeTool(ToolId::kYosys, L"Yosys", L"RTL synthesis", L"yosys",
                            {L"-V"}, InstallMethod::kApt,
                            L"Ubuntu package: yosys"));
-  tools.push_back(MakeTool(
-      ToolId::kOpenSta, L"OpenSTA", L"Static timing analysis", L"/bin/bash",
-      {L"-lc",
-       L". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh "
-       L"2>/dev/null || true; nix-shell "
-       L"\"$HOME/.designpp/toolchains/openlane2/shell.nix\" "
-       L"--run 'sta -version'"},
-      InstallMethod::kManagedFlow, L"Provided by OpenLane 2 Nix environment"));
-  tools.push_back(MakeTool(
-      ToolId::kOpenRoad, L"OpenROAD", L"Physical design", L"/bin/bash",
-      {L"-lc",
-       L". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh "
-       L"2>/dev/null || true; nix-shell "
-       L"\"$HOME/.designpp/toolchains/openlane2/shell.nix\" "
-       L"--run 'openroad -version'"},
-      InstallMethod::kManagedFlow, L"Provided by OpenLane 2 Nix environment"));
+  tools.push_back(
+      MakeManagedTool(ToolId::kOpenSta, L"OpenSTA — OpenLane", L"openlane2"));
+  tools.push_back(
+      MakeManagedTool(ToolId::kOpenRoad, L"OpenROAD — OpenLane", L"openlane2"));
+  tools.push_back(
+      MakeManagedTool(ToolId::kOpenRoad, L"OpenROAD — ORFS", L"orfs"));
   tools.push_back(MakeTool(ToolId::kMagic, L"Magic", L"DRC / layout", L"magic",
                            {L"--version"}, InstallMethod::kApt,
                            L"Ubuntu package: magic"));
@@ -120,22 +247,9 @@ std::vector<ToolDefinition> BuildToolCatalog() {
   tools.push_back(MakeTool(ToolId::kGtkWave, L"GTKWave", L"Waveform viewer",
                            L"gtkwave", {L"--version"}, InstallMethod::kApt,
                            L"Ubuntu package: gtkwave"));
-  tools.push_back(MakeTool(
-      ToolId::kOpenLane2, L"OpenLane 2", L"Managed RTL-to-GDS flow",
-      L"/bin/bash",
-      {L"-lc",
-       L". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh "
-       L"2>/dev/null || true; nix-shell "
-       L"\"$HOME/.designpp/toolchains/openlane2/shell.nix\" "
-       L"--run 'openlane --version'"},
-      InstallMethod::kManagedFlow, L"Official OpenLane Nix environment"));
   tools.push_back(
-      MakeTool(ToolId::kOrfs, L"ORFS", L"OpenROAD Flow Scripts", L"/bin/bash",
-               {L"-lc",
-                L"test -f \"$HOME/.designpp/toolchains/orfs/flow/Makefile\" && "
-                L"git -C \"$HOME/.designpp/toolchains/orfs\" describe --always "
-                L"--dirty"},
-               InstallMethod::kManagedFlow, L"Official ORFS Git repository"));
+      MakeManagedTool(ToolId::kOpenLane2, L"OpenLane 2", L"openlane2"));
+  tools.push_back(MakeManagedTool(ToolId::kOrfs, L"ORFS", L"orfs"));
   tools.push_back(MakeTool(ToolId::kDocker, L"Docker CLI",
                            L"Container execution provider", L"docker",
                            {L"--version"}, InstallMethod::kExternal,

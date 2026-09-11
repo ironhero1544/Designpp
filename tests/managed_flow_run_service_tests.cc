@@ -8,6 +8,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <vector>
 
@@ -125,6 +126,8 @@ void WriteCollectedArtifacts(const runtime::WslCommand& copy_command,
   write(L"final/top.v", "module top; endmodule\n");
   write(L"final/top.sdf", "sdf");
   write(L"final/top.spef", "spef");
+  write(L"54-magic-drc/reports/drc.rpt", "Magic DRC clean\n");
+  write(L"56-netgen-lvs/reports/lvs.rpt", "Netgen LVS clean\n");
 }
 
 runtime::ProcessResult Success(std::string output = {}) {
@@ -143,8 +146,12 @@ TEST_CLASS(ManagedFlowRunServiceTests){
 ControlledExecutionProvider provider;
 application::ManagedFlowRunService service(&provider);
 ManagedFlowCollector collector;
+application::ManagedFlowRunRequest request = MakeRequest(workspace);
+request.project.physical_implementation.io_placement.north.entries = {
+    "data\\[\\d+\\]", "$2"};
+request.project.physical_implementation.io_placement.north.bit_major = true;
 Assert::IsTrue(service
-                   .Start(MakeRequest(workspace),
+                   .Start(std::move(request),
                           [&collector](auto event) {
                             collector.Add(std::move(event));
                           })
@@ -152,6 +159,22 @@ Assert::IsTrue(service
 Assert::IsTrue(provider.WaitForStarts(1));
 provider.Complete(0, Success("OpenLane v2.3.10\n"));
 Assert::IsTrue(provider.WaitForStarts(2));
+const runtime::WslCommand validation_command = provider.Command(1);
+Assert::IsTrue(validation_command.arguments.size() > 7);
+const std::filesystem::path staging =
+    WslToWindows(validation_command.arguments[7]);
+std::ifstream pin_order_stream(staging / L"constraints" / L"pin_order.cfg",
+                               std::ios::binary);
+const std::string pin_order((std::istreambuf_iterator<char>(pin_order_stream)),
+                            std::istreambuf_iterator<char>());
+Assert::AreEqual(std::string("#N\n@bit_major\ndata\\[\\d+\\]\n$2\n\n"),
+                 pin_order);
+std::ifstream config_stream(staging / L"config.json", std::ios::binary);
+const std::string config((std::istreambuf_iterator<char>(config_stream)),
+                         std::istreambuf_iterator<char>());
+Assert::IsTrue(config.find("\"FP_PIN_ORDER_CFG\": "
+                           "\"dir::constraints/pin_order.cfg\"") !=
+               std::string::npos);
 provider.Complete(1, Success("Starting step Verilator.Lint\n"));
 Assert::IsFalse(provider.DestroyedDuringCompletionCallback(1));
 Assert::IsTrue(provider.WaitForStarts(3));
@@ -168,6 +191,22 @@ Assert::IsTrue(terminal.run->outcome.process_succeeded);
 Assert::IsTrue(terminal.run->outcome.result_succeeded);
 Assert::IsTrue(std::filesystem::is_regular_file(terminal.run->directory /
                                                 L"artifacts" / L"final.gds"));
+Assert::IsTrue(std::filesystem::is_regular_file(terminal.run->directory /
+                                                L"reports" / L"openlane" /
+                                                L"54-magic-drc" / L"reports" /
+                                                L"drc.rpt"));
+Assert::IsTrue(std::filesystem::is_regular_file(terminal.run->directory /
+                                                L"reports" / L"openlane" /
+                                                L"56-netgen-lvs" / L"reports" /
+                                                L"lvs.rpt"));
+Assert::AreEqual(static_cast<std::size_t>(2),
+                 static_cast<std::size_t>(std::count_if(
+                     terminal.run->artifacts.begin(),
+                     terminal.run->artifacts.end(),
+                     [](const application::RunArtifact& artifact) {
+                       return artifact.kind == "report" &&
+                              artifact.format == "rpt";
+                     })));
 }  // namespace designpp::tests
 
 TEST_METHOD(PhysicalViolationSeparatesProcessAndResultFailure) {
@@ -194,6 +233,39 @@ TEST_METHOD(PhysicalViolationSeparatesProcessAndResultFailure) {
   Assert::IsFalse(terminal.status.Ok());
   Assert::IsTrue(terminal.run->outcome.process_succeeded);
   Assert::IsFalse(terminal.run->outcome.result_succeeded);
+}
+
+TEST_METHOD(NonzeroFlowPreservesPhysicalVerificationReportsAsPartial) {
+  TemporarySynthesisWorkspace workspace;
+  ControlledExecutionProvider provider;
+  application::ManagedFlowRunService service(&provider);
+  ManagedFlowCollector collector;
+  Assert::IsTrue(
+      service
+          .Start(MakeRequest(workspace),
+                 [&collector](auto event) { collector.Add(std::move(event)); })
+          .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, Success("OpenLane v2.3.10\n"));
+  Assert::IsTrue(provider.WaitForStarts(2));
+  provider.Complete(1, Success());
+  Assert::IsTrue(provider.WaitForStarts(3));
+  runtime::ProcessResult failed = Success("Starting step Magic.DRC\n");
+  failed.exit_code = 7;
+  provider.Complete(2, failed);
+  Assert::IsTrue(provider.WaitForStarts(4));
+  WriteCollectedArtifacts(provider.Command(3));
+  provider.Complete(3, Success());
+  Assert::IsTrue(collector.WaitForTerminal());
+  const auto terminal = collector.Terminal();
+  Assert::IsFalse(terminal.run->outcome.process_succeeded);
+  const auto report = std::find_if(
+      terminal.run->artifacts.begin(), terminal.run->artifacts.end(),
+      [](const application::RunArtifact& artifact) {
+        return artifact.kind == "report" && artifact.partial &&
+               artifact.relative_path.ends_with("drc.rpt");
+      });
+  Assert::IsTrue(report != terminal.run->artifacts.end());
 }
 
 TEST_METHOD(CancelAndDuplicateCallbackDeliverTerminalExactlyOnce) {
@@ -296,6 +368,137 @@ TEST_METHOD(ChangedFingerprintRejectsResumeBeforeExecution) {
   Assert::IsTrue(collector.WaitForTerminal());
   Assert::IsFalse(collector.Terminal().status.Ok());
   Assert::AreEqual<std::size_t>(1U, collector.TerminalCount());
+}
+
+TEST_METHOD(ChangedOrfsFingerprintStartsFreshLineage) {
+  TemporarySynthesisWorkspace workspace;
+  ControlledExecutionProvider provider;
+  application::ManagedFlowRunService service(&provider);
+  ManagedFlowCollector collector;
+  application::ManagedFlowRunRequest request = MakeRequest(workspace);
+  request.project.physical_implementation.backend_id = "orfs";
+  request.project.physical_implementation.orfs.platform = "asap7";
+  request.profile.orfs_root = "/home/test/orfs";
+  request.full_flow = true;
+  request.resume = application::ManagedFlowResumeRequest{
+      "parent", "lineage", "route", "stale-fingerprint", std::string(64, 'a')};
+  Assert::IsTrue(
+      service
+          .Start(std::move(request),
+                 [&collector](auto event) { collector.Add(std::move(event)); })
+          .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, Success("DESIGNPP_ORFS_TOOL_MODE=orfs-flake\n"
+                               "DESIGNPP_ORFS_READY\n"
+                               "036d106273e66855cd5214d49518fd0f0df7de61\n"));
+  Assert::IsTrue(provider.WaitForStarts(2));
+  const runtime::WslCommand validation = provider.Command(1);
+  Assert::AreEqual(std::wstring(L"/bin/bash"), validation.program);
+  Assert::AreEqual(std::wstring(L"all"), validation.arguments[7]);
+  Assert::IsTrue(validation.arguments[9].empty());
+  Assert::IsTrue(validation.arguments[10].empty());
+  provider.Complete(1, Success());
+  Assert::IsTrue(provider.WaitForStarts(3));
+  runtime::ProcessResult failed = Success();
+  failed.exit_code = 7;
+  provider.Complete(2, failed);
+  Assert::IsTrue(provider.WaitForStarts(4));
+  provider.Complete(3, Success(), 2);
+  Assert::IsTrue(collector.WaitForTerminal());
+  Assert::AreEqual(static_cast<std::size_t>(1), collector.TerminalCount());
+  Assert::AreNotEqual(std::string("lineage"), collector.Terminal().lineage_id);
+}
+
+TEST_METHOD(OrfsSuccessfulProcessWithoutTimeUnitMarkerFailsContract) {
+  TemporarySynthesisWorkspace workspace;
+  ControlledExecutionProvider provider;
+  application::ManagedFlowRunService service(&provider);
+  ManagedFlowCollector collector;
+  application::ManagedFlowRunRequest request = MakeRequest(workspace);
+  request.project.physical_implementation.backend_id = "orfs";
+  request.project.physical_implementation.orfs.platform = "asap7";
+  request.profile.orfs_root = "/home/test/orfs";
+  request.full_flow = true;
+
+  Assert::IsTrue(
+      service
+          .Start(std::move(request),
+                 [&collector](auto event) { collector.Add(std::move(event)); })
+          .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, Success("DESIGNPP_ORFS_TOOL_MODE=orfs-flake\n"
+                               "DESIGNPP_ORFS_READY\n"
+                               "036d106273e66855cd5214d49518fd0f0df7de61\n"));
+  Assert::IsTrue(provider.WaitForStarts(2));
+  provider.Complete(1, Success());
+  Assert::IsTrue(provider.WaitForStarts(3));
+  provider.Complete(2, Success());
+  Assert::IsTrue(provider.WaitForStarts(4));
+  provider.Complete(3, Success());
+  Assert::IsTrue(collector.WaitForTerminal());
+
+  const application::ManagedFlowRunEvent terminal = collector.Terminal();
+  Assert::IsFalse(terminal.status.Ok());
+  Assert::AreEqual(std::string("timing_unit_validation"),
+                   terminal.failure_stage);
+  Assert::AreEqual(std::string("ORFS-SDC-UNIT"), terminal.failure_code);
+  Assert::IsTrue(std::any_of(terminal.diagnostics.begin(),
+                             terminal.diagnostics.end(),
+                             [](const core::Diagnostic& diagnostic) {
+                               return diagnostic.code == "ORFS-SDC-UNIT";
+                             }));
+}
+
+TEST_METHOD(ChangedOrfsFingerprintRejectsExplicitRebuildAndPersistsReason) {
+  TemporarySynthesisWorkspace workspace;
+  ControlledExecutionProvider provider;
+  application::ManagedFlowRunService service(&provider);
+  ManagedFlowCollector collector;
+  application::ManagedFlowRunRequest request = MakeRequest(workspace);
+  request.project.physical_implementation.backend_id = "orfs";
+  request.project.physical_implementation.orfs.platform = "asap7";
+  request.profile.orfs_root = "/home/test/orfs";
+  request.rebuild_from_stage = core::StageId::kRouting;
+  request.resume = application::ManagedFlowResumeRequest{
+      "parent", "lineage", "route", "stale-fingerprint", std::string(64, 'a')};
+  Assert::IsTrue(
+      service
+          .Start(std::move(request),
+                 [&collector](auto event) { collector.Add(std::move(event)); })
+          .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, Success("DESIGNPP_ORFS_TOOL_MODE=orfs-flake\n"
+                               "DESIGNPP_ORFS_READY\n"
+                               "036d106273e66855cd5214d49518fd0f0df7de61\n"));
+  Assert::IsTrue(collector.WaitForTerminal());
+  const application::ManagedFlowRunEvent terminal = collector.Terminal();
+  Assert::AreEqual(static_cast<std::size_t>(1), collector.TerminalCount());
+  Assert::IsFalse(terminal.status.Ok());
+  Assert::IsNotNull(terminal.run.get());
+  Assert::AreEqual(std::string("input_preparation"), terminal.failure_stage);
+  Assert::AreEqual(std::string("ORFS-PREPARE"), terminal.failure_code);
+  Assert::AreEqual(static_cast<std::size_t>(1), terminal.diagnostics.size());
+  Assert::AreEqual(std::string("ORFS-PREPARE"),
+                   terminal.diagnostics.front().code);
+  Assert::AreEqual(std::string("reports/orfs-summary.json"),
+                   terminal.run->outcome.summary_relative_path);
+
+  const auto read_file = [](const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(stream),
+                       std::istreambuf_iterator<char>());
+  };
+  const std::string summary = read_file(
+      terminal.run->directory / terminal.run->outcome.summary_relative_path);
+  Assert::IsTrue(summary.find("\"failure_stage\":\"input_preparation\"") !=
+                 std::string::npos);
+  Assert::IsTrue(summary.find("ORFS rebuild fingerprint no longer matches") !=
+                 std::string::npos);
+  const std::string diagnostics =
+      read_file(terminal.run->directory / "diagnostics.jsonl");
+  Assert::IsTrue(diagnostics.find("ORFS-PREPARE") != std::string::npos);
+  Assert::IsTrue(diagnostics.find("fingerprint no longer matches") !=
+                 std::string::npos);
 }
 }
 ;

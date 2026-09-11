@@ -10,10 +10,11 @@ bool LayoutWindow::Create(HINSTANCE instance,
                           const application::WorkspaceOpenRequest& request,
                           application::LibraryRecord library,
                           ViewWindowLogCallback central_log,
-                          ViewWindowLibraryChangedCallback library_changed) {
-  return implementation_.Create(instance, request, std::move(library),
-                                std::move(central_log),
-                                std::move(library_changed));
+                          ViewWindowLibraryChangedCallback library_changed,
+                          LayoutJsonEditorCallback json_editor) {
+  return implementation_.Create(
+      instance, request, std::move(library), std::move(central_log),
+      std::move(library_changed), std::move(json_editor));
 }
 
 ViewWindowKind LayoutWindow::Kind() const noexcept {

@@ -73,19 +73,26 @@ struct LayoutViewerService::Implementation final
   explicit Implementation(runtime::ExecutionProvider* execution_provider)
       : provider(execution_provider), gui_execution(execution_provider) {}
 
-  void QueueCleanup(std::unique_ptr<runtime::ExecutionHandle> completed) {
+  void QueueCleanup(std::shared_ptr<runtime::ExecutionHandle> completed) {
     if (!completed) return;
-    auto shared =
-        std::shared_ptr<runtime::ExecutionHandle>(std::move(completed));
-    static_cast<void>(
-        cleanup.Submit([shared = std::move(shared)](std::stop_token) mutable {
-          shared.reset();
-        }));
+    auto holder = std::make_shared<std::shared_ptr<runtime::ExecutionHandle>>(
+        std::move(completed));
+    const bool queued = cleanup.Submit([holder](std::stop_token) mutable {
+      // Destruction may join a process callback thread.  Keep it away from
+      // the callback which delivered completion.
+      auto handle = std::move(*holder);
+      holder.reset();
+      static_cast<void>(handle->IsRunning());
+    });
+    if (!queued) {
+      std::scoped_lock lock(mutex);
+      deferred_handle_cleanup.push_back(std::move(*holder));
+    }
   }
 
   void Emit(LayoutViewerEvent event) {
     LayoutViewerEventSink current;
-    std::unique_ptr<runtime::ExecutionHandle> completed;
+    std::shared_ptr<runtime::ExecutionHandle> completed;
     {
       std::scoped_lock lock(mutex);
       if (shutdown || event.generation != request.generation) return;
@@ -126,6 +133,23 @@ struct LayoutViewerService::Implementation final
       return;
     }
     staged_wsl_path = std::move(mapped).Value();
+    if (!request.marker_database_path.empty()) {
+      const std::filesystem::path staged_marker =
+          staging_directory / L"markers.lyrdb";
+      copied = CopyGds(request.marker_database_path, staged_marker);
+      if (!copied.Ok()) {
+        Complete({copied.code, "Cannot stage the KLayout marker database",
+                  copied.native_error},
+                 {});
+        return;
+      }
+      auto mapped_marker = mapper.WindowsToWsl(staged_marker);
+      if (!mapped_marker.Ok()) {
+        Complete(mapped_marker.GetStatus(), {});
+        return;
+      }
+      staged_marker_wsl_path = std::move(mapped_marker).Value();
+    }
     Probe();
   }
 
@@ -173,12 +197,25 @@ struct LayoutViewerService::Implementation final
       Complete(started.status, {});
       return;
     }
-    std::scoped_lock lock(mutex);
-    handle = std::move(started.handle);
+    std::shared_ptr<runtime::ExecutionHandle> probe_handle(
+        std::move(started.handle));
+    bool discard = false;
+    {
+      std::scoped_lock lock(mutex);
+      if (shutdown || terminal || phase != 1) {
+        discard = true;
+      } else {
+        handle = std::move(probe_handle);
+      }
+    }
+    if (discard) {
+      if (probe_handle) probe_handle->Cancel();
+      QueueCleanup(std::move(probe_handle));
+    }
   }
 
   void Launch() {
-    std::unique_ptr<runtime::ExecutionHandle> probe_handle;
+    std::shared_ptr<runtime::ExecutionHandle> probe_handle;
     {
       std::scoped_lock lock(mutex);
       probe_handle = std::move(handle);
@@ -187,6 +224,10 @@ struct LayoutViewerService::Implementation final
     runtime::WslCommand command;
     command.program = L"klayout";
     command.arguments = {staged_wsl_path};
+    if (!staged_marker_wsl_path.empty()) {
+      command.arguments.insert(command.arguments.end(),
+                               {L"-m", staged_marker_wsl_path});
+    }
     if (!request.profile.wsl_distribution.empty()) {
       command.distribution = Utf8ToWide(request.profile.wsl_distribution);
     }
@@ -214,7 +255,7 @@ struct LayoutViewerService::Implementation final
                                    ? "KLayout could not open through WSLg; the "
                                      "GDS artifact remains valid"
                                    : gui_result.status.message,
-                              gui_result.status.native_error},
+                               gui_result.status.native_error},
               std::move(result));
         });
     if (!started.Ok()) {
@@ -240,9 +281,12 @@ struct LayoutViewerService::Implementation final
   runtime::PathMapper mapper;
   LayoutViewerRequest request;
   LayoutViewerEventSink sink;
-  std::unique_ptr<runtime::ExecutionHandle> handle;
+  std::shared_ptr<runtime::ExecutionHandle> handle;
+  std::vector<std::shared_ptr<runtime::ExecutionHandle>>
+      deferred_handle_cleanup;
   std::filesystem::path staging_directory;
   std::wstring staged_wsl_path;
+  std::wstring staged_marker_wsl_path;
   bool active = false;
   bool terminal = false;
   bool shutdown = false;
@@ -275,6 +319,8 @@ core::Status LayoutViewerService::Open(LayoutViewerRequest request,
     implementation->terminal = false;
     implementation->cancellation_requested = false;
     implementation->phase = 0;
+    implementation->staged_wsl_path.clear();
+    implementation->staged_marker_wsl_path.clear();
   }
   const bool queued =
       implementation->scheduler.Submit([implementation](std::stop_token token) {
@@ -315,7 +361,8 @@ void LayoutViewerService::Cancel() noexcept {
 void LayoutViewerService::Shutdown() noexcept {
   const auto implementation = implementation_;
   if (!implementation) return;
-  std::unique_ptr<runtime::ExecutionHandle> handle;
+  std::shared_ptr<runtime::ExecutionHandle> handle;
+  std::vector<std::shared_ptr<runtime::ExecutionHandle>> deferred_handles;
   {
     std::scoped_lock lock(implementation->mutex);
     if (implementation->shutdown) return;
@@ -323,12 +370,14 @@ void LayoutViewerService::Shutdown() noexcept {
     implementation->active = false;
     implementation->sink = {};
     handle = std::move(implementation->handle);
+    deferred_handles.swap(implementation->deferred_handle_cleanup);
   }
   if (handle) handle->Cancel();
   handle.reset();
   implementation->gui_execution.Shutdown();
   implementation->scheduler.RequestStop();
   implementation->cleanup.RequestStop();
+  deferred_handles.clear();
 }
 
 bool LayoutViewerService::IsActive() const {

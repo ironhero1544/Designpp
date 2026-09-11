@@ -241,27 +241,6 @@ std::wstring DecodeOutput(std::string_view bytes,
   return text;
 }
 
-std::wstring FirstNonEmptyLine(std::wstring text) {
-  std::size_t position = 0;
-  while (position < text.size()) {
-    const std::size_t end = text.find_first_of(L"\r\n", position);
-    std::wstring line = text.substr(position, end - position);
-    const std::size_t first = line.find_first_not_of(L" \t");
-    if (first != std::wstring::npos) {
-      const std::size_t last = line.find_last_not_of(L" \t");
-      return line.substr(first, last - first + 1);
-    }
-    if (end == std::wstring::npos) {
-      break;
-    }
-    position = text.find_first_not_of(L"\r\n", end);
-    if (position == std::wstring::npos) {
-      break;
-    }
-  }
-  return {};
-}
-
 std::wstring FormatCommand(const runtime::ProcessRequest& request) {
   std::wstring command = L"> " + request.executable.wstring();
   for (const std::wstring& argument : request.arguments) {
@@ -320,7 +299,7 @@ bool LibraryManagerWindow::Create(HINSTANCE instance, int show_command) {
   tool_states_.assign(tools_.size(), {L"확인 전", L"-"});
   const unsigned int logical_cpus = std::thread::hardware_concurrency();
   const std::size_t usable_cpus = logical_cpus > 1 ? logical_cpus - 1 : 1;
-  maximum_parallel_probes_ = std::clamp<std::size_t>(usable_cpus, 1, 4);
+  maximum_parallel_probes_ = std::clamp<std::size_t>(usable_cpus, 1, 2);
 
   WNDCLASSEXW window_class{};
   window_class.cbSize = sizeof(window_class);
@@ -1000,21 +979,52 @@ void LibraryManagerWindow::HandleBrowserSelection(std::size_t pane_index) {
       }
     }
   } else if (pane_index == 1) {
-    if (selected_cell_id_ == item.cell_id && selected_view_id_.empty()) return;
+    if (selected_library_id_ == item.library_id &&
+        selected_cell_id_ == item.cell_id && selected_view_id_.empty()) {
+      return;
+    }
+    selected_library_id_ = item.library_id;
     selected_cell_id_ = item.cell_id;
     selected_view_id_.clear();
+    selected_library_.reset();
     selected_cell_.reset();
-    if (selected_library_) {
-      const auto& cells = libraries_[*selected_library_].library.cells;
+    for (std::size_t library_index = 0; library_index < libraries_.size();
+         ++library_index) {
+      if (libraries_[library_index].library.id != selected_library_id_) {
+        continue;
+      }
+      selected_library_ = library_index;
+      const auto& cells = libraries_[library_index].library.cells;
       for (std::size_t index = 0; index < cells.size(); ++index) {
         if (cells[index].id == item.cell_id) {
           selected_cell_ = index;
           break;
         }
       }
+      break;
     }
   } else {
+    selected_library_id_ = item.library_id;
+    selected_cell_id_ = item.cell_id;
     selected_view_id_ = item.view_id;
+    selected_library_.reset();
+    selected_cell_.reset();
+    for (std::size_t library_index = 0; library_index < libraries_.size();
+         ++library_index) {
+      if (libraries_[library_index].library.id != selected_library_id_) {
+        continue;
+      }
+      selected_library_ = library_index;
+      const auto& cells = libraries_[library_index].library.cells;
+      for (std::size_t cell_index = 0; cell_index < cells.size();
+           ++cell_index) {
+        if (cells[cell_index].id == selected_cell_id_) {
+          selected_cell_ = cell_index;
+          break;
+        }
+      }
+      break;
+    }
   }
   UpdateLibraryCommandState();
   ScheduleBrowserFilter();
@@ -1122,8 +1132,13 @@ void LibraryManagerWindow::OpenWorkspace(std::string_view library_id,
     if (found_view != cell->views.end()) view = &*found_view;
   }
   if (cell != library->library.cells.end() && view != nullptr) {
+    SelectBrowserContext(library_id, cell_id, view_id);
     RecordRecentWorkspace(request, library->library.name + " / " + cell->name +
                                        " / " + view->name);
+    AppendLog(L"[Workspace] " + Utf8ToWide(library->library.name) + L" / " +
+              Utf8ToWide(cell->name) + L" / " + Utf8ToWide(view->name) +
+              L" 열기\r\n");
+    return;
   }
   AppendLog(L"[Workspace] " + Utf8ToWide(cell_id) + L" Cell 열기\r\n");
 }
@@ -1463,12 +1478,47 @@ void LibraryManagerWindow::HandleLibraryTreeSelection() {
   const auto* tag = reinterpret_cast<NavigationTag*>(item.lParam);
   selected_library_.reset();
   selected_cell_.reset();
+  selected_library_id_.clear();
+  selected_cell_id_.clear();
+  selected_view_id_.clear();
   if (tag != nullptr && tag->kind != NavigationTag::Kind::kRoot) {
+    if (tag->library_index >= libraries_.size()) return;
     selected_library_ = tag->library_index;
-    if (tag->kind == NavigationTag::Kind::kCell)
+    selected_library_id_ = libraries_[*selected_library_].library.id;
+    if (tag->kind == NavigationTag::Kind::kCell) {
+      const auto& cells = libraries_[*selected_library_].library.cells;
+      if (tag->cell_index >= cells.size()) return;
       selected_cell_ = tag->cell_index;
+      selected_cell_id_ = cells[*selected_cell_].id;
+    }
   }
   PopulateLibraryList();
+  ScheduleBrowserFilter();
+}
+
+void LibraryManagerWindow::SelectBrowserContext(std::string_view library_id,
+                                                std::string_view cell_id,
+                                                std::string_view view_id) {
+  selected_library_id_ = std::string(library_id);
+  selected_cell_id_ = std::string(cell_id);
+  selected_view_id_ = std::string(view_id);
+  selected_library_.reset();
+  selected_cell_.reset();
+  for (std::size_t library_index = 0; library_index < libraries_.size();
+       ++library_index) {
+    if (libraries_[library_index].library.id != selected_library_id_) continue;
+    selected_library_ = library_index;
+    const auto& cells = libraries_[library_index].library.cells;
+    for (std::size_t cell_index = 0; cell_index < cells.size(); ++cell_index) {
+      if (cells[cell_index].id == selected_cell_id_) {
+        selected_cell_ = cell_index;
+        break;
+      }
+    }
+    break;
+  }
+  UpdateLibraryCommandState();
+  ScheduleBrowserFilter();
 }
 
 void LibraryManagerWindow::HandleLibraryListDoubleClick() {
@@ -2075,10 +2125,10 @@ void LibraryManagerWindow::StartPendingToolProbes() {
   }
   if (operation_ == Operation::kCheckingTools && active_tasks_.empty() &&
       next_tool_index_ >= tools_.size()) {
-    FinishOperation(
-        failed_work_ == 0
-            ? L"모든 도구가 설치되어 있습니다."
-            : L"도구 검사가 완료되었습니다. 미설치 항목을 확인하세요.");
+    FinishOperation(failed_work_ == 0 ? L"필수 도구 버전 검사가 통과했습니다. "
+                                        L"Flow 호환성은 별도 검증이 필요합니다."
+                                      : L"도구 검사가 완료되었습니다. 환경 "
+                                        L"준비 및 오류 항목을 확인하세요.");
   }
 }
 
@@ -2312,8 +2362,20 @@ void LibraryManagerWindow::HandleTaskCompletion(
     std::string remainder;
     const std::wstring decoded =
         DecodeOutput(result.output, encoding, &remainder);
-    if (succeeded) {
-      SetToolState(*tool_index, L"설치됨", FirstNonEmptyLine(decoded));
+    const auto version =
+        runtime::ParseToolVersion(tools_[*tool_index].id, decoded);
+    if (decoded.find(L"DESIGNPP_ENVIRONMENT_MISSING") != std::wstring::npos) {
+      SetToolState(*tool_index, L"미설치", L"-");
+      if (tools_[*tool_index].required) ++failed_work_;
+    } else if (decoded.find(L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED") !=
+               std::wstring::npos) {
+      SetToolState(*tool_index, L"환경 준비 필요", L"식별 불가");
+      if (tools_[*tool_index].required) ++failed_work_;
+    } else if (succeeded && !version.empty()) {
+      SetToolState(*tool_index, L"버전 확인됨", version);
+    } else if (succeeded) {
+      SetToolState(*tool_index, L"검사 실패", L"식별 불가");
+      if (tools_[*tool_index].required) ++failed_work_;
     } else {
       const bool required = tools_[*tool_index].required;
       SetToolState(*tool_index,

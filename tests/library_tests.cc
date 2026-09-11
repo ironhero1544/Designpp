@@ -73,6 +73,27 @@ TEST_METHOD(DuplicateCellNamesAreRejectedCaseInsensitively) {
                  core::ErrorCode::kAlreadyExists);
 }
 
+TEST_METHOD(DuplicateCellIdsAreRejected) {
+  core::Library library = SampleLibrary();
+  library.cells.push_back(
+      {"22222222-2222-2222-2222-222222222222", "other", "", {}});
+  Assert::IsTrue(core::ValidateLibrary(library).code ==
+                 core::ErrorCode::kAlreadyExists);
+  library.cells.back().id = "22222222-2222-2222-2222-222222222222";
+  library.cells.back().name = "other2";
+  Assert::IsTrue(core::ValidateLibrary(library).code ==
+                 core::ErrorCode::kAlreadyExists);
+}
+
+TEST_METHOD(DuplicateViewIdsAreRejected) {
+  core::Library library = SampleLibrary();
+  library.cells[0].views.push_back(
+      {"33333333-3333-3333-3333-333333333333", "other", "",
+       core::ViewKind::kVerilog, {}});
+  Assert::IsTrue(core::ValidateLibrary(library).code ==
+                 core::ErrorCode::kAlreadyExists);
+}
+
 TEST_METHOD(ManagedFileCannotEscapeLibrary) {
   core::Library library = SampleLibrary();
   library.cells[0].views[0].files[0].relative_path = "../outside.sv";

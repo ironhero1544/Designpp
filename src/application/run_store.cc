@@ -93,11 +93,15 @@ core::Status WriteManifest(const RunRecord& run) {
   const core::Status outcome_status = ValidateOutcome(run);
   if (!outcome_status.Ok()) return outcome_status;
   std::ostringstream output;
-  output << "{\n  \"schema_version\": 3,\n  \"run_id\": \"" << Escape(run.id)
+  output << "{\n  \"schema_version\": 4,\n  \"run_id\": \"" << Escape(run.id)
          << "\",\n  \"project_id\": \"" << Escape(run.project_id)
          << "\",\n  \"stage\": \"" << Escape(run.stage) << "\",\n  \"tool\": \""
          << Escape(run.tool) << "\",\n  \"tool_version\": \""
-         << Escape(run.tool_version) << "\",\n  \"status\": \""
+         << Escape(run.tool_version) << "\",\n  \"source_run_id\": \""
+         << Escape(run.source_run_id) << "\",\n  \"environment_id\": \""
+         << Escape(run.environment_id)
+         << "\",\n  \"environment_fingerprint\": \""
+         << Escape(run.environment_fingerprint) << "\",\n  \"status\": \""
          << RunStatusName(run.status) << "\",\n  \"started_utc\": \""
          << run.started_utc << "\",\n  \"finished_utc\": \"" << run.finished_utc
          << "\",\n  \"exit_code\": " << run.exit_code
@@ -363,6 +367,12 @@ core::Result<std::vector<RunRecord>> RunStore::List(
     run.stage = ExtractString(json, "stage");
     run.tool = ExtractString(json, "tool");
     run.tool_version = ExtractString(json, "tool_version");
+    if (schema_version >= 4) {
+      run.source_run_id = ExtractString(json, "source_run_id");
+      run.environment_id = ExtractString(json, "environment_id");
+      run.environment_fingerprint =
+          ExtractString(json, "environment_fingerprint");
+    }
     run.started_utc = ExtractString(json, "started_utc");
     run.finished_utc = ExtractString(json, "finished_utc");
     run.exit_code = ExtractUint32(json, "exit_code");

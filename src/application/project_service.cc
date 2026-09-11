@@ -427,6 +427,9 @@ core::Result<core::Project> DecodeProject(std::string_view json) {
         project.physical_implementation;
     std::uint64_t utilization = 0;
     std::string placement_density;
+    std::string tap_cell_distance;
+    const bool has_core_area = implementation != nullptr &&
+                               Member(*implementation, "core_area") != nullptr;
     if (implementation == nullptr ||
         (schema >= 6 && !ReadString(*implementation, "backend_id",
                                     &configuration.backend_id)) ||
@@ -443,6 +446,10 @@ core::Result<core::Project> DecodeProject(std::string_view json) {
                     &placement_density) ||
         !ReadStringArray(*implementation, "die_area",
                          &configuration.die_area) ||
+        (has_core_area && !ReadStringArray(*implementation, "core_area",
+                                           &configuration.core_area)) ||
+        (schema >= 8 && !ReadString(*implementation, "tap_cell_distance_um",
+                                    &tap_cell_distance)) ||
         !ReadString(*implementation, "pnr_sdc_path",
                     &configuration.pnr_sdc_path) ||
         !ReadString(*implementation, "signoff_sdc_path",
@@ -454,8 +461,172 @@ core::Result<core::Project> DecodeProject(std::string_view json) {
     }
     configuration.core_utilization_percent =
         static_cast<std::uint32_t>(utilization);
+    if (schema >= 11 && !ReadStringArray(*implementation, "automatic_fields",
+                                         &configuration.automatic_fields)) {
+      return Status{ErrorCode::kCorruptData, "Automatic settings are invalid",
+                    0};
+    }
     if (!placement_density.empty()) {
       configuration.placement_density_percent = placement_density;
+    }
+    if (!tap_cell_distance.empty()) {
+      configuration.tap_cell_distance_um = tap_cell_distance;
+    }
+    if (schema >= 7) {
+      const JsonValue* pdn_value =
+          Member(*implementation, "power_distribution");
+      const auto* pdn =
+          pdn_value ? pdn_value->Get<JsonValue::Object>() : nullptr;
+      std::uint64_t multilayer = 0;
+      std::uint64_t core_ring = 0;
+      std::uint64_t enable_rails = 0;
+      auto& power = configuration.power_distribution;
+      std::string vertical_width;
+      std::string horizontal_width;
+      std::string vertical_spacing;
+      std::string horizontal_spacing;
+      std::string vertical_pitch;
+      std::string horizontal_pitch;
+      std::string vertical_offset;
+      std::string horizontal_offset;
+      if (pdn == nullptr || !ReadNumber(*pdn, "multilayer", &multilayer) ||
+          !ReadNumber(*pdn, "core_ring", &core_ring) ||
+          !ReadNumber(*pdn, "enable_rails", &enable_rails) || multilayer > 1 ||
+          core_ring > 1 || enable_rails > 1 ||
+          !ReadString(*pdn, "vertical_width_um", &vertical_width) ||
+          !ReadString(*pdn, "horizontal_width_um", &horizontal_width) ||
+          !ReadString(*pdn, "vertical_spacing_um", &vertical_spacing) ||
+          !ReadString(*pdn, "horizontal_spacing_um", &horizontal_spacing) ||
+          !ReadString(*pdn, "vertical_pitch_um", &vertical_pitch) ||
+          !ReadString(*pdn, "horizontal_pitch_um", &horizontal_pitch) ||
+          !ReadString(*pdn, "vertical_offset_um", &vertical_offset) ||
+          !ReadString(*pdn, "horizontal_offset_um", &horizontal_offset)) {
+        return Status{ErrorCode::kCorruptData,
+                      "Power distribution configuration is invalid", 0};
+      }
+      power.multilayer = multilayer == 1;
+      power.core_ring = core_ring == 1;
+      power.enable_rails = enable_rails == 1;
+      const auto assign = [](const std::string& value,
+                             std::optional<std::string>* output) {
+        if (!value.empty()) *output = value;
+      };
+      assign(vertical_width, &power.vertical_width_um);
+      assign(horizontal_width, &power.horizontal_width_um);
+      assign(vertical_spacing, &power.vertical_spacing_um);
+      assign(horizontal_spacing, &power.horizontal_spacing_um);
+      assign(vertical_pitch, &power.vertical_pitch_um);
+      assign(horizontal_pitch, &power.horizontal_pitch_um);
+      assign(vertical_offset, &power.vertical_offset_um);
+      assign(horizontal_offset, &power.horizontal_offset_um);
+    }
+    if (schema >= 9) {
+      const JsonValue* io_value = Member(*implementation, "io_placement");
+      const auto* io_object =
+          io_value ? io_value->Get<JsonValue::Object>() : nullptr;
+      auto& io = configuration.io_placement;
+      std::string minimum_distance;
+      std::string vertical_length;
+      std::string horizontal_length;
+      std::string vertical_thickness;
+      std::string horizontal_thickness;
+      std::string vertical_extension;
+      std::string horizontal_extension;
+      std::string vertical_layer;
+      std::string horizontal_layer;
+      if (io_object == nullptr ||
+          !ReadString(*io_object, "algorithm", &io.algorithm) ||
+          !ReadString(*io_object, "minimum_distance_um", &minimum_distance) ||
+          !ReadString(*io_object, "vertical_length_um", &vertical_length) ||
+          !ReadString(*io_object, "horizontal_length_um", &horizontal_length) ||
+          !ReadString(*io_object, "vertical_thickness_multiplier",
+                      &vertical_thickness) ||
+          !ReadString(*io_object, "horizontal_thickness_multiplier",
+                      &horizontal_thickness) ||
+          !ReadString(*io_object, "vertical_extension_um",
+                      &vertical_extension) ||
+          !ReadString(*io_object, "horizontal_extension_um",
+                      &horizontal_extension) ||
+          !ReadString(*io_object, "vertical_layer", &vertical_layer) ||
+          !ReadString(*io_object, "horizontal_layer", &horizontal_layer) ||
+          !ReadString(*io_object, "unmatched_policy", &io.unmatched_policy)) {
+        return Status{ErrorCode::kCorruptData,
+                      "I/O placement configuration is invalid", 0};
+      }
+      const auto assign_optional = [](const std::string& value,
+                                      std::optional<std::string>* output) {
+        if (!value.empty()) *output = value;
+      };
+      assign_optional(minimum_distance, &io.minimum_distance_um);
+      assign_optional(vertical_length, &io.vertical_length_um);
+      assign_optional(horizontal_length, &io.horizontal_length_um);
+      assign_optional(vertical_thickness, &io.vertical_thickness_multiplier);
+      assign_optional(horizontal_thickness,
+                      &io.horizontal_thickness_multiplier);
+      assign_optional(vertical_extension, &io.vertical_extension_um);
+      assign_optional(horizontal_extension, &io.horizontal_extension_um);
+      assign_optional(vertical_layer, &io.vertical_layer);
+      assign_optional(horizontal_layer, &io.horizontal_layer);
+      const auto read_side = [io_object](std::string_view name,
+                                         core::IoPinSideConfiguration* side) {
+        const JsonValue* side_value = Member(*io_object, name);
+        const auto* side_object =
+            side_value ? side_value->Get<JsonValue::Object>() : nullptr;
+        std::uint64_t bit_major = 0;
+        std::string side_distance;
+        if (side_object == nullptr ||
+            !ReadString(*side_object, "minimum_distance_um", &side_distance) ||
+            !ReadNumber(*side_object, "bit_major", &bit_major) ||
+            bit_major > 1 ||
+            !ReadStringArray(*side_object, "entries", &side->entries)) {
+          return false;
+        }
+        if (!side_distance.empty()) side->minimum_distance_um = side_distance;
+        side->bit_major = bit_major == 1;
+        return true;
+      };
+      if (!read_side("north", &io.north) || !read_side("south", &io.south) ||
+          !read_side("east", &io.east) || !read_side("west", &io.west)) {
+        return Status{ErrorCode::kCorruptData,
+                      "I/O pin-order configuration is invalid", 0};
+      }
+    }
+    if (schema >= 10) {
+      const JsonValue* orfs_value = Member(*implementation, "orfs");
+      const auto* orfs =
+          orfs_value ? orfs_value->Get<JsonValue::Object>() : nullptr;
+      auto& orfs_configuration = configuration.orfs;
+      if (orfs == nullptr ||
+          !ReadString(*orfs, "platform", &orfs_configuration.platform) ||
+          !ReadString(*orfs, "flow_variant",
+                      &orfs_configuration.flow_variant) ||
+          !ReadString(*orfs, "advanced_variables_json",
+                      &orfs_configuration.advanced_variables_json)) {
+        return Status{ErrorCode::kCorruptData, "ORFS configuration is invalid",
+                      0};
+      }
+    }
+  }
+  if (schema >= 12) {
+    const JsonValue* verification_value =
+        Member(*root, "physical_verification");
+    const auto* verification =
+        verification_value
+            ? verification_value->Get<JsonValue::Object>()
+            : nullptr;
+    auto& configuration = project.physical_verification;
+    if (verification == nullptr ||
+        !ReadString(*verification, "drc_recipe_id",
+                    &configuration.drc_recipe_id) ||
+        !ReadString(*verification, "lvs_recipe_id",
+                    &configuration.lvs_recipe_id) ||
+        !ReadString(*verification, "top_cell", &configuration.top_cell) ||
+        !ReadString(*verification, "power_net", &configuration.power_net) ||
+        !ReadString(*verification, "ground_net", &configuration.ground_net) ||
+        !ReadString(*verification, "parameters_json",
+                    &configuration.parameters_json)) {
+      return Status{ErrorCode::kCorruptData,
+                    "Physical verification configuration is invalid", 0};
     }
   }
   Status validation = core::ValidateProject(project);
@@ -560,6 +731,13 @@ std::string EncodeProject(const core::Project& project) {
       project.physical_implementation;
   output << "},\n  \"physical_implementation\": {\"backend_id\": ";
   quote(implementation.backend_id);
+  output << ", \"automatic_fields\": [";
+  for (std::size_t index = 0; index < implementation.automatic_fields.size();
+       ++index) {
+    if (index) output << ", ";
+    quote(implementation.automatic_fields[index]);
+  }
+  output << ']';
   output << ", \"pdk\": ";
   quote(implementation.pdk);
   output << ", \"standard_cell_library\": ";
@@ -581,12 +759,106 @@ std::string EncodeProject(const core::Project& project) {
     if (index != 0) output << ", ";
     quote(implementation.die_area[index]);
   }
-  output << "], \"pnr_sdc_path\": ";
+  output << "], \"core_area\": [";
+  for (std::size_t index = 0; index < implementation.core_area.size();
+       ++index) {
+    if (index != 0) output << ", ";
+    quote(implementation.core_area[index]);
+  }
+  output << "], \"tap_cell_distance_um\": ";
+  quote(implementation.tap_cell_distance_um.value_or(""));
+  output << ", \"pnr_sdc_path\": ";
   quote(implementation.pnr_sdc_path);
   output << ", \"signoff_sdc_path\": ";
   quote(implementation.signoff_sdc_path);
+  const core::PowerDistributionConfiguration& pdn =
+      implementation.power_distribution;
+  output << ", \"power_distribution\": {\"multilayer\": "
+         << (pdn.multilayer ? 1 : 0)
+         << ", \"core_ring\": " << (pdn.core_ring ? 1 : 0)
+         << ", \"enable_rails\": " << (pdn.enable_rails ? 1 : 0)
+         << ", \"vertical_width_um\": ";
+  quote(pdn.vertical_width_um.value_or(""));
+  output << ", \"horizontal_width_um\": ";
+  quote(pdn.horizontal_width_um.value_or(""));
+  output << ", \"vertical_spacing_um\": ";
+  quote(pdn.vertical_spacing_um.value_or(""));
+  output << ", \"horizontal_spacing_um\": ";
+  quote(pdn.horizontal_spacing_um.value_or(""));
+  output << ", \"vertical_pitch_um\": ";
+  quote(pdn.vertical_pitch_um.value_or(""));
+  output << ", \"horizontal_pitch_um\": ";
+  quote(pdn.horizontal_pitch_um.value_or(""));
+  output << ", \"vertical_offset_um\": ";
+  quote(pdn.vertical_offset_um.value_or(""));
+  output << ", \"horizontal_offset_um\": ";
+  quote(pdn.horizontal_offset_um.value_or(""));
+  output << '}';
+  const core::IoPlacementConfiguration& io = implementation.io_placement;
+  output << ", \"io_placement\": {\"algorithm\": ";
+  quote(io.algorithm);
+  output << ", \"minimum_distance_um\": ";
+  quote(io.minimum_distance_um.value_or(""));
+  output << ", \"vertical_length_um\": ";
+  quote(io.vertical_length_um.value_or(""));
+  output << ", \"horizontal_length_um\": ";
+  quote(io.horizontal_length_um.value_or(""));
+  output << ", \"vertical_thickness_multiplier\": ";
+  quote(io.vertical_thickness_multiplier.value_or(""));
+  output << ", \"horizontal_thickness_multiplier\": ";
+  quote(io.horizontal_thickness_multiplier.value_or(""));
+  output << ", \"vertical_extension_um\": ";
+  quote(io.vertical_extension_um.value_or(""));
+  output << ", \"horizontal_extension_um\": ";
+  quote(io.horizontal_extension_um.value_or(""));
+  output << ", \"vertical_layer\": ";
+  quote(io.vertical_layer.value_or(""));
+  output << ", \"horizontal_layer\": ";
+  quote(io.horizontal_layer.value_or(""));
+  output << ", \"unmatched_policy\": ";
+  quote(io.unmatched_policy);
+  const auto write_side = [&output, &quote](
+                              std::string_view name,
+                              const core::IoPinSideConfiguration& side) {
+    output << ", \"" << name << "\": {\"minimum_distance_um\": ";
+    quote(side.minimum_distance_um.value_or(""));
+    output << ", \"bit_major\": " << (side.bit_major ? 1 : 0)
+           << ", \"entries\": [";
+    for (std::size_t index = 0; index < side.entries.size(); ++index) {
+      if (index != 0) output << ", ";
+      quote(side.entries[index]);
+    }
+    output << "]}";
+  };
+  write_side("north", io.north);
+  write_side("south", io.south);
+  write_side("east", io.east);
+  write_side("west", io.west);
+  output << '}';
   output << ", \"advanced_overrides_json\": ";
   quote(implementation.advanced_overrides_json);
+  output << ", \"orfs\": {\"platform\": ";
+  quote(implementation.orfs.platform);
+  output << ", \"flow_variant\": ";
+  quote(implementation.orfs.flow_variant);
+  output << ", \"advanced_variables_json\": ";
+  quote(implementation.orfs.advanced_variables_json);
+  output << '}';
+  output << '}';
+  const core::PhysicalVerificationConfiguration& verification =
+      project.physical_verification;
+  output << ",\n  \"physical_verification\": {\"drc_recipe_id\": ";
+  quote(verification.drc_recipe_id);
+  output << ", \"lvs_recipe_id\": ";
+  quote(verification.lvs_recipe_id);
+  output << ", \"top_cell\": ";
+  quote(verification.top_cell);
+  output << ", \"power_net\": ";
+  quote(verification.power_net);
+  output << ", \"ground_net\": ";
+  quote(verification.ground_net);
+  output << ", \"parameters_json\": ";
+  quote(verification.parameters_json);
   output << "}\n}\n";
   return output.str();
 }
@@ -851,19 +1123,54 @@ Status ProjectService::Save(ProjectDocument* document) const {
       !document->writer_lease->Acquired()) {
     return {ErrorCode::kPermissionDenied, "Project is read-only", 0};
   }
+  auto saved = Save(document, document->project);
+  if (!saved.Ok()) return saved.GetStatus();
+  document->project = std::move(saved).Value();
+  return Status::Success();
+}
+
+core::Result<core::Project> ProjectService::Save(ProjectDocument* document,
+                                                 core::Project project) const {
+  if (document == nullptr) {
+    return Status{ErrorCode::kInvalidArgument, "Project document is missing",
+                  0};
+  }
+  if (document->read_only || !document->writer_lease ||
+      !document->writer_lease->Acquired()) {
+    return Status{ErrorCode::kPermissionDenied, "Project is read-only", 0};
+  }
+  if (project.id != document->project.id ||
+      project.library_id != document->project.library_id ||
+      project.cell_id != document->project.cell_id) {
+    return Status{ErrorCode::kConflict,
+                  "Project snapshot does not belong to this cell", 0};
+  }
+  const std::filesystem::path expected_path =
+      document->library_directory / L"cells" / Utf8ToWide(project.cell_id) /
+      L"project.dpproj";
+  if (document->library_directory.empty() ||
+      document->project_path != expected_path) {
+    return Status{ErrorCode::kConflict,
+                  "Project storage path does not match this cell", 0};
+  }
   const std::uint64_t expected_revision = document->project.revision;
-  core::Project updated = document->project;
-  updated.revision = expected_revision + 1;
-  updated.modified_utc = UtcNow();
-  Status status =
-      store_.Save(updated, document->project_path, expected_revision);
-  if (status.Ok()) document->project = std::move(updated);
-  return status;
+  project.revision = expected_revision + 1;
+  project.modified_utc = UtcNow();
+  const Status status = store_.Save(project, expected_path, expected_revision);
+  if (!status.Ok()) return status;
+  return project;
 }
 
 Status ProjectService::Refresh(ProjectDocument* document) const {
   if (document == nullptr) {
     return {ErrorCode::kInvalidArgument, "Project document is missing", 0};
+  }
+  if (document->library_directory.empty() ||
+      document->project_path !=
+          (document->library_directory / L"cells" /
+           Utf8ToWide(document->project.cell_id) / L"project.dpproj")) {
+    return {ErrorCode::kConflict,
+            "Project storage path does not match this cell", 0};
   }
   auto loaded = store_.Load(document->project_path);
   if (!loaded.Ok()) return loaded.GetStatus();

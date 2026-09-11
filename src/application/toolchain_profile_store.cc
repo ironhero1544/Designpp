@@ -278,17 +278,23 @@ core::Result<core::ToolchainSettings> Decode(std::string_view json) {
   }
   core::ToolchainSettings settings;
   std::uint64_t schema = 0;
+  std::uint64_t revision = 1;
   if (!ReadNumber(*root, "schema_version", &schema) ||
       !ReadString(*root, "selected_profile_id",
                   &settings.selected_profile_id)) {
     return Status{ErrorCode::kCorruptData,
                   "Toolchain settings required field is missing", 0};
   }
-  if (schema != core::ToolchainSettings::kSchemaVersion) {
+  if (schema < 1 || schema > core::ToolchainSettings::kSchemaVersion) {
     return Status{ErrorCode::kUnsupportedSchema,
                   "Unsupported toolchain settings schema", 0};
   }
-  settings.schema_version = static_cast<std::uint32_t>(schema);
+  settings.schema_version = core::ToolchainSettings::kSchemaVersion;
+  if (schema >= 3 && !ReadNumber(*root, "revision", &revision)) {
+    return Status{ErrorCode::kCorruptData,
+                  "Toolchain settings revision is missing", 0};
+  }
+  settings.revision = revision;
   const JsonValue* profiles_value = Member(*root, "profiles");
   const auto* profiles =
       profiles_value ? profiles_value->Get<JsonValue::Array>() : nullptr;
@@ -312,7 +318,87 @@ core::Result<core::ToolchainSettings> Decode(std::string_view json) {
                     0};
     }
     profile.cpu_budget = static_cast<std::uint32_t>(cpu_budget);
+    if (schema >= 2 &&
+        (!ReadString(*object, "openlane_mode", &profile.openlane_mode) ||
+         !ReadString(*object, "openlane_bundle_id",
+                     &profile.openlane_bundle_id) ||
+         !ReadString(*object, "orfs_mode", &profile.orfs_mode) ||
+         !ReadString(*object, "orfs_bundle_id", &profile.orfs_bundle_id))) {
+      return Status{ErrorCode::kCorruptData,
+                    "Toolchain bundle selection is missing", 0};
+    }
+    if (schema >= 3 &&
+        (!ReadString(*object, "active_openlane_environment_id",
+                     &profile.active_openlane_environment_id) ||
+         !ReadString(*object, "rollback_openlane_environment_id",
+                     &profile.rollback_openlane_environment_id) ||
+         !ReadString(*object, "active_orfs_environment_id",
+                     &profile.active_orfs_environment_id) ||
+         !ReadString(*object, "rollback_orfs_environment_id",
+                     &profile.rollback_orfs_environment_id))) {
+      return Status{ErrorCode::kCorruptData,
+                    "Toolchain environment selection is missing", 0};
+    }
     settings.profiles.push_back(std::move(profile));
+  }
+  if (schema >= 3) {
+    const auto* environments = [&]() -> const JsonValue::Array* {
+      const JsonValue* value = Member(*root, "environments");
+      return value ? value->Get<JsonValue::Array>() : nullptr;
+    }();
+    const auto* recipes = [&]() -> const JsonValue::Array* {
+      const JsonValue* value = Member(*root, "verification_recipes");
+      return value ? value->Get<JsonValue::Array>() : nullptr;
+    }();
+    if (environments == nullptr || recipes == nullptr) {
+      return Status{ErrorCode::kCorruptData,
+                    "Toolchain environment catalog is missing", 0};
+    }
+    for (const JsonValue& value : *environments) {
+      const auto* object = value.Get<JsonValue::Object>();
+      core::InstalledToolchainEnvironment environment;
+      std::uint64_t verified = 0;
+      if (object == nullptr || !ReadString(*object, "id", &environment.id) ||
+          !ReadString(*object, "provider_id", &environment.provider_id) ||
+          !ReadString(*object, "bundle_id", &environment.bundle_id) ||
+          !ReadString(*object, "root", &environment.root) ||
+          !ReadString(*object, "executable", &environment.executable) ||
+          !ReadString(*object, "version", &environment.version) ||
+          !ReadString(*object, "fingerprint", &environment.fingerprint) ||
+          !ReadNumber(*object, "verified", &verified) || verified > 1) {
+        return Status{ErrorCode::kCorruptData,
+                      "Installed toolchain environment is malformed", 0};
+      }
+      environment.verified = verified == 1;
+      settings.environments.push_back(std::move(environment));
+    }
+    for (const JsonValue& value : *recipes) {
+      const auto* object = value.Get<JsonValue::Object>();
+      core::VerificationRecipe recipe;
+      std::uint64_t trusted = 0;
+      std::uint64_t managed = 0;
+      if (object == nullptr || !ReadString(*object, "id", &recipe.id) ||
+          !ReadString(*object, "name", &recipe.name) ||
+          !ReadString(*object, "engine", &recipe.engine) ||
+          !ReadString(*object, "provider_id", &recipe.provider_id) ||
+          !ReadString(*object, "platform", &recipe.platform) ||
+          !ReadString(*object, "root", &recipe.root) ||
+          !ReadString(*object, "entrypoint", &recipe.entrypoint) ||
+          !ReadString(*object, "technology_file", &recipe.technology_file) ||
+          !ReadString(*object, "reference_netlist",
+                      &recipe.reference_netlist) ||
+          !ReadString(*object, "setup_file", &recipe.setup_file) ||
+          !ReadString(*object, "output_format", &recipe.output_format) ||
+          !ReadString(*object, "content_hash", &recipe.content_hash) ||
+          !ReadNumber(*object, "trusted", &trusted) || trusted > 1 ||
+          !ReadNumber(*object, "managed", &managed) || managed > 1) {
+        return Status{ErrorCode::kCorruptData,
+                      "Physical verification recipe is malformed", 0};
+      }
+      recipe.trusted = trusted == 1;
+      recipe.managed = managed == 1;
+      settings.verification_recipes.push_back(std::move(recipe));
+    }
   }
   const Status validation = core::ValidateToolchainSettings(settings);
   return validation.Ok()
@@ -326,6 +412,7 @@ std::string Encode(const core::ToolchainSettings& settings) {
     output << '"' << EscapeJson(value) << '"';
   };
   output << "{\n  \"schema_version\": " << settings.schema_version
+         << ",\n  \"revision\": " << settings.revision
          << ",\n  \"selected_profile_id\": ";
   quote(settings.selected_profile_id);
   output << ",\n  \"profiles\": [";
@@ -343,7 +430,75 @@ std::string Encode(const core::ToolchainSettings& settings) {
     quote(profile.orfs_root);
     output << ", \"pdk_root\": ";
     quote(profile.pdk_root);
+    output << ", \"openlane_mode\": ";
+    quote(profile.openlane_mode);
+    output << ", \"openlane_bundle_id\": ";
+    quote(profile.openlane_bundle_id);
+    output << ", \"orfs_mode\": ";
+    quote(profile.orfs_mode);
+    output << ", \"orfs_bundle_id\": ";
+    quote(profile.orfs_bundle_id);
+    output << ", \"active_openlane_environment_id\": ";
+    quote(profile.active_openlane_environment_id);
+    output << ", \"rollback_openlane_environment_id\": ";
+    quote(profile.rollback_openlane_environment_id);
+    output << ", \"active_orfs_environment_id\": ";
+    quote(profile.active_orfs_environment_id);
+    output << ", \"rollback_orfs_environment_id\": ";
+    quote(profile.rollback_orfs_environment_id);
     output << ", \"cpu_budget\": " << profile.cpu_budget << '}';
+  }
+  output << "\n  ],\n  \"environments\": [";
+  for (std::size_t index = 0; index < settings.environments.size(); ++index) {
+    const core::InstalledToolchainEnvironment& environment =
+        settings.environments[index];
+    output << (index == 0 ? "" : ",") << "\n    {\"id\": ";
+    quote(environment.id);
+    output << ", \"provider_id\": ";
+    quote(environment.provider_id);
+    output << ", \"bundle_id\": ";
+    quote(environment.bundle_id);
+    output << ", \"root\": ";
+    quote(environment.root);
+    output << ", \"executable\": ";
+    quote(environment.executable);
+    output << ", \"version\": ";
+    quote(environment.version);
+    output << ", \"fingerprint\": ";
+    quote(environment.fingerprint);
+    output << ", \"verified\": " << (environment.verified ? 1 : 0) << '}';
+  }
+  output << "\n  ],\n  \"verification_recipes\": [";
+  for (std::size_t index = 0; index < settings.verification_recipes.size();
+       ++index) {
+    const core::VerificationRecipe& recipe =
+        settings.verification_recipes[index];
+    output << (index == 0 ? "" : ",") << "\n    {\"id\": ";
+    quote(recipe.id);
+    output << ", \"name\": ";
+    quote(recipe.name);
+    output << ", \"engine\": ";
+    quote(recipe.engine);
+    output << ", \"provider_id\": ";
+    quote(recipe.provider_id);
+    output << ", \"platform\": ";
+    quote(recipe.platform);
+    output << ", \"root\": ";
+    quote(recipe.root);
+    output << ", \"entrypoint\": ";
+    quote(recipe.entrypoint);
+    output << ", \"technology_file\": ";
+    quote(recipe.technology_file);
+    output << ", \"reference_netlist\": ";
+    quote(recipe.reference_netlist);
+    output << ", \"setup_file\": ";
+    quote(recipe.setup_file);
+    output << ", \"output_format\": ";
+    quote(recipe.output_format);
+    output << ", \"content_hash\": ";
+    quote(recipe.content_hash);
+    output << ", \"trusted\": " << (recipe.trusted ? 1 : 0)
+           << ", \"managed\": " << (recipe.managed ? 1 : 0) << '}';
   }
   output << "\n  ]\n}\n";
   return output.str();
@@ -412,12 +567,28 @@ ToolchainProfileStore::LoadOrCreateDefaults() const {
 
 Status ToolchainProfileStore::Save(
     const core::ToolchainSettings& settings) const {
+  return Save(settings, 0);
+}
+
+Status ToolchainProfileStore::Save(const core::ToolchainSettings& settings,
+                                   std::uint64_t expected_revision) const {
   if (!initialization_status_.Ok()) return initialization_status_;
   const Status validation = core::ValidateToolchainSettings(settings);
   if (!validation.Ok()) return validation;
   MutexLease lease;
   const Status acquired = lease.Acquire();
   if (!acquired.Ok()) return acquired;
+  if (expected_revision != 0) {
+    auto current_bytes = ReadFile(settings_path_);
+    if (!current_bytes.Ok()) return current_bytes.GetStatus();
+    auto current = Decode(current_bytes.Value());
+    if (!current.Ok()) return current.GetStatus();
+    if (current.Value().revision != expected_revision ||
+        settings.revision != expected_revision + 1) {
+      return {ErrorCode::kExternalModification,
+              "Toolchain settings changed in another process", 0};
+    }
+  }
   std::error_code error;
   std::filesystem::create_directories(settings_path_.parent_path(), error);
   if (error) {

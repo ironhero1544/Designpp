@@ -71,6 +71,11 @@ Status ValidateLibrary(const Library& library) {
               "Managed library file path escapes the library", 0};
     }
   }
+  // Cell and view IDs are directory names on Windows.  Treat them as
+  // case-insensitive identities so two manifest entries can never resolve to
+  // the same project.dpproj or view files directory and accidentally share
+  // physical-implementation settings.
+  std::unordered_set<std::string> cell_ids;
   std::unordered_set<std::string> cell_names;
   for (const Cell& cell : library.cells) {
     if (cell.id.empty() || !(status = ValidateDisplayName(cell.name)).Ok()) {
@@ -78,9 +83,13 @@ Status ValidateLibrary(const Library& library) {
                  ? Status{ErrorCode::kCorruptData, "Cell id is missing", 0}
                  : status;
     }
+    if (!cell_ids.insert(FoldAscii(cell.id)).second) {
+      return {ErrorCode::kAlreadyExists, "Duplicate cell id", 0};
+    }
     if (!cell_names.insert(FoldAscii(cell.name)).second) {
       return {ErrorCode::kAlreadyExists, "Duplicate cell name", 0};
     }
+    std::unordered_set<std::string> view_ids;
     std::unordered_set<std::string> view_names;
     for (const View& view : cell.views) {
       if (view.kind == ViewKind::kPhysicalDesign) {
@@ -91,6 +100,9 @@ Status ValidateLibrary(const Library& library) {
         return status.Ok()
                    ? Status{ErrorCode::kCorruptData, "View id is missing", 0}
                    : status;
+      }
+      if (!view_ids.insert(FoldAscii(view.id)).second) {
+        return {ErrorCode::kAlreadyExists, "Duplicate view id", 0};
       }
       if (!view_names.insert(FoldAscii(view.name)).second) {
         return {ErrorCode::kAlreadyExists, "Duplicate view name", 0};

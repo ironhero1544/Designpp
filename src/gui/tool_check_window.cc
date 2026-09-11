@@ -15,6 +15,18 @@ constexpr int kStartCheckButtonId = 3001;
 constexpr int kInstallToolButtonId = 3002;
 constexpr int kRemoveToolButtonId = 3003;
 
+std::wstring SelectedBundle(const runtime::ToolDefinition& tool) {
+  if (tool.display_name.find(L"OpenLane") != std::wstring::npos) {
+    return L"OpenLane 2.3.10 candidate";
+  }
+  if (tool.display_name.find(L"ORFS") != std::wstring::npos) {
+    return L"ORFS 26Q2 (036d1062)";
+  }
+  return tool.install_method == runtime::InstallMethod::kManagedFlow
+             ? L"Managed shared runtime"
+             : L"System / profile range";
+}
+
 }  // namespace
 
 ToolCheckWindow::~ToolCheckWindow() {
@@ -79,6 +91,13 @@ void ToolCheckWindow::SetToolState(std::size_t index, std::wstring_view status,
                        status_text.data());
   ListView_SetItemText(tool_list_, static_cast<int>(index), 3,
                        version_text.data());
+  std::wstring summary(status);
+  if (status.find(L"준비") != std::wstring_view::npos) {
+    summary = L"환경 준비/복구를 실행하세요";
+  } else if (status.find(L"실패") != std::wstring_view::npos) {
+    summary = L"상세 로그와 선택 Profile을 확인하세요";
+  }
+  ListView_SetItemText(tool_list_, static_cast<int>(index), 6, summary.data());
 }
 
 void ToolCheckWindow::SetChecking(bool checking) const {
@@ -187,8 +206,8 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
 bool ToolCheckWindow::CreateControls() {
   description_ = CreateWindowExW(
       0, L"STATIC",
-      L"Windows Runtime과 WSL2 EDA 도구의 설치 상태 및 버전을 확인합니다. "
-      L"모든 실행 로그는 Library Manager에 표시됩니다. 미선택 시 전체 "
+      L"선택 Profile의 실제 버전, 준비된 환경 및 검증 조합을 확인합니다. "
+      L"검사는 다운로드나 빌드를 시작하지 않습니다. 미선택 시 전체 "
       L"작업입니다.",
       WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, window_, nullptr, instance_, nullptr);
   start_button_ = CreateWindowExW(
@@ -197,8 +216,8 @@ bool ToolCheckWindow::CreateControls() {
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStartCheckButtonId)),
       instance_, nullptr);
   install_button_ = CreateWindowExW(
-      0, L"BUTTON", L"선택 설치 / 업데이트",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_,
+      0, L"BUTTON", L"환경 준비 / 복구", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      0, 0, 0, 0, window_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInstallToolButtonId)),
       instance_, nullptr);
   remove_button_ = CreateWindowExW(
@@ -226,9 +245,10 @@ bool ToolCheckWindow::CreateControls() {
 }
 
 void ToolCheckWindow::PopulateTools() {
-  const wchar_t* headings[] = {L"도구", L"용도", L"상태", L"버전",
-                               L"설치 방식"};
-  for (int column_index = 0; column_index < 5; ++column_index) {
+  const wchar_t* headings[] = {L"도구 / 환경", L"용도",      L"상태",
+                               L"실제 버전",   L"선택 조합", L"설치 방식",
+                               L"후속 조치"};
+  for (int column_index = 0; column_index < 7; ++column_index) {
     LVCOLUMNW column{};
     column.mask = LVCF_TEXT | LVCF_WIDTH;
     column.cx = 100;
@@ -245,9 +265,11 @@ void ToolCheckWindow::PopulateTools() {
     ListView_SetItemText(tool_list_, static_cast<int>(index), 1,
                          tools_[index].purpose.data());
     SetToolState(index, L"확인 전", L"-");
+    std::wstring bundle = SelectedBundle(tools_[index]);
+    ListView_SetItemText(tool_list_, static_cast<int>(index), 4, bundle.data());
     std::wstring method =
         runtime::InstallMethodName(tools_[index].install_method);
-    ListView_SetItemText(tool_list_, static_cast<int>(index), 4, method.data());
+    ListView_SetItemText(tool_list_, static_cast<int>(index), 5, method.data());
   }
 }
 
@@ -257,7 +279,7 @@ void ToolCheckWindow::LayoutControls(int width, int height) const {
   }
   const int margin = ScaleForDpi(12, dpi_);
   const int gap = ScaleForDpi(8, dpi_);
-  const int description_height = ScaleForDpi(24, dpi_);
+  const int description_height = ScaleForDpi(42, dpi_);
   const int check_width = ScaleForDpi(110, dpi_);
   const int install_width = ScaleForDpi(180, dpi_);
   const int remove_width = ScaleForDpi(110, dpi_);
@@ -276,15 +298,16 @@ void ToolCheckWindow::LayoutControls(int width, int height) const {
   button_x += install_width + gap;
   MoveWindow(remove_button_, button_x, margin, remove_width, button_height,
              TRUE);
-  const int list_top = margin + button_height + gap;
+  const int list_top =
+      margin + std::max(button_height, description_height) + gap;
   MoveWindow(tool_list_, margin, list_top, std::max(0, width - margin * 2),
              std::max(0, height - list_top - margin), TRUE);
 }
 
 void ToolCheckWindow::UpdateActionButtonLabels() const {
   const bool has_selection = SelectedToolIndex().has_value();
-  SetWindowTextW(install_button_, has_selection ? L"선택 설치 / 업데이트"
-                                                : L"전체 설치 / 업데이트");
+  SetWindowTextW(install_button_, has_selection ? L"선택 환경 준비 / 복구"
+                                                : L"전체 환경 준비 / 복구");
   SetWindowTextW(remove_button_, has_selection ? L"선택 삭제" : L"전체 삭제");
 }
 
@@ -303,8 +326,8 @@ void ToolCheckWindow::ApplyDpi(UINT dpi) {
   dpi_ = dpi == 0 ? kDefaultDpi : dpi;
   font_ = CreateUiFont(dpi_);
   ApplyFontToWindowTree(window_, font_.Get());
-  const int widths[] = {120, 225, 105, 315, 125};
-  for (int index = 0; index < 5; ++index) {
+  const int widths[] = {165, 190, 115, 190, 190, 120, 250};
+  for (int index = 0; index < 7; ++index) {
     ListView_SetColumnWidth(tool_list_, index,
                             ScaleForDpi(widths[index], dpi_));
   }

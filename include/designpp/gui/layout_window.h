@@ -20,7 +20,8 @@ class LayoutWindow final : public ViewWindow {
                             const application::WorkspaceOpenRequest& request,
                             application::LibraryRecord library,
                             ViewWindowLogCallback central_log,
-                            ViewWindowLibraryChangedCallback library_changed);
+                            ViewWindowLibraryChangedCallback library_changed,
+                            LayoutJsonEditorCallback json_editor = {});
 
   [[nodiscard]] ViewWindowKind Kind() const noexcept override;
   [[nodiscard]] bool CanActivate(

@@ -521,6 +521,20 @@ void MonacoEditorHost::SetReadOnly(std::string_view document_id,
                    ",\"read_only\":" + (read_only ? "true" : "false")));
 }
 
+void MonacoEditorHost::ReplaceDocumentText(std::string_view document_id,
+                                           std::string_view text) {
+  implementation_->Post(
+      Envelope("replace_document_text", implementation_->session_id,
+               "\"document_id\":" + application::EscapeEditorJson(document_id) +
+                   ",\"text\":" + application::EscapeEditorJson(text)));
+}
+
+void MonacoEditorHost::RequestDocumentText(std::string_view document_id) {
+  implementation_->Post(Envelope(
+      "request_document_text", implementation_->session_id,
+      "\"document_id\":" + application::EscapeEditorJson(document_id)));
+}
+
 void MonacoEditorHost::RequestSaveAll() {
   implementation_->Post(
       Envelope("request_save_all", implementation_->session_id));

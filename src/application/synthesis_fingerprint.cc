@@ -104,6 +104,15 @@ core::Result<std::string> CalculateFileSha256(
   return status.Ok() ? hash.Finish() : core::Result<std::string>(status);
 }
 
+core::Result<std::string> CalculateSha256(std::string_view bytes) {
+  Sha256 hash;
+  if (!hash.valid() || !hash.Append(bytes)) {
+    return core::Status{core::ErrorCode::kIoError,
+                        "Cannot hash in-memory input", 0};
+  }
+  return hash.Finish();
+}
+
 core::Result<SynthesisFingerprint> CalculateSynthesisFingerprint(
     const core::Project& project, const std::vector<ResolvedSource>& sources,
     const std::filesystem::path& library_directory) {

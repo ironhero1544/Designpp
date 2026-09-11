@@ -28,6 +28,17 @@ test('protocol accepts a valid native message', () => {
   assert.equal(message.type, 'open_document');
 });
 
+test('protocol accepts in-memory document snapshot commands', () => {
+  for (const type of ['request_document_text', 'replace_document_text']) {
+    const message = parseNativeMessage({
+      protocol: protocolVersion,
+      type,
+      session_id: 'layout-json',
+    }, 'layout-json');
+    assert.equal(message.type, type);
+  }
+});
+
 test('HDL tokenizer keyword set contains structural SystemVerilog tokens', () => {
   for (const keyword of ['module', 'interface', 'package', 'class', 'always_ff']) {
     assert.ok(hdlKeywords.includes(keyword));

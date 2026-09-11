@@ -41,13 +41,18 @@ class WorkspaceRegistry final {
                               std::string_view cell_id);
 
  private:
+  struct WindowEntry {
+    application::WorkspaceOpenRequest request;
+    std::unique_ptr<ViewWindow> window;
+  };
+
   void RemoveClosed();
 
   HINSTANCE instance_ = nullptr;
   LogCallback central_log_;
   LibraryChangedCallback library_changed_;
   std::shared_ptr<MonacoEditorEnvironment> editor_environment_;
-  std::vector<std::unique_ptr<ViewWindow>> windows_;
+  std::vector<WindowEntry> windows_;
   std::vector<std::unique_ptr<LibertyWindow>> liberty_windows_;
 };
 

@@ -20,6 +20,10 @@ class ToolchainProfileStore final {
       const;
   [[nodiscard]] core::Status Save(
       const core::ToolchainSettings& settings) const;
+  // Atomically rejects a stale settings update. The caller supplies the
+  // revision loaded before editing and persists expected_revision + 1.
+  [[nodiscard]] core::Status Save(const core::ToolchainSettings& settings,
+                                  std::uint64_t expected_revision) const;
   [[nodiscard]] const std::filesystem::path& settings_path() const noexcept;
 
   [[nodiscard]] static core::ToolchainSettings CreateDefaults();

@@ -7,7 +7,10 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "designpp/runtime/task_scheduler.h"
 
@@ -18,8 +21,10 @@ enum class Phase {
   kIdle,
   kProbe,
   kCreateDirectory,
+  kChmod,
   kMount,
   kVerify,
+  kVerifyMounted,
   kCleanup,
   kLaunch,
 };
@@ -48,9 +53,17 @@ runtime::WslCommand ChildCommand(const runtime::WslCommand& original,
 core::Status RepairFailureStatus(std::string operation) {
   return {core::ErrorCode::kIoError,
           "WSLg shared-memory repair failed during " + operation +
-              "; run 'wsl --shutdown' after closing other WSL work, then "
+              "; /mnt/shared_memory must be a writable tmpfs mount. Close "
+              "other WSL GUI applications, run 'wsl --shutdown', then "
               "restart the viewer",
           0};
+}
+
+bool IsTmpfsMount(std::string_view output) {
+  const std::size_t begin = output.find_first_not_of(" \t\r\n");
+  if (begin == std::string_view::npos) return false;
+  const std::size_t end = output.find_first_of(" \t\r\n", begin);
+  return output.substr(begin, end - begin) == "tmpfs";
 }
 
 }  // namespace
@@ -64,10 +77,17 @@ struct WslGuiExecutionService::Implementation final
     if (!completed) return;
     auto shared =
         std::shared_ptr<runtime::ExecutionHandle>(std::move(completed));
-    static_cast<void>(
-        cleanup.Submit([shared = std::move(shared)](std::stop_token) mutable {
-          shared.reset();
-        }));
+    auto holder = std::make_shared<std::shared_ptr<runtime::ExecutionHandle>>(
+        std::move(shared));
+    const bool queued = cleanup.Submit([holder](std::stop_token) mutable {
+      auto handle = std::move(*holder);
+      holder.reset();
+      handle.reset();
+    });
+    if (!queued) {
+      std::scoped_lock lock(mutex);
+      deferred_cleanup.push_back(std::move(*holder));
+    }
   }
 
   void StartPhase(Phase next_phase, runtime::WslCommand next_command) {
@@ -108,13 +128,19 @@ struct WslGuiExecutionService::Implementation final
       Finish(started.status, {}, repair_attempted.load());
       return;
     }
-    std::scoped_lock lock(mutex);
-    if (shutdown || terminal || phase != next_phase) {
+    bool discard = false;
+    {
+      std::scoped_lock lock(mutex);
+      if (shutdown || terminal || phase != next_phase) {
+        discard = true;
+      } else {
+        handle = std::move(started.handle);
+      }
+    }
+    if (discard) {
       started.handle->Cancel();
       QueueCleanup(std::move(started.handle));
-      return;
     }
-    handle = std::move(started.handle);
   }
 
   void PhaseCompleted(Phase completed_phase, runtime::ProcessResult result) {
@@ -132,8 +158,8 @@ struct WslGuiExecutionService::Implementation final
         result.started && result.exit_code == 0 && result.error_message.empty();
     switch (completed_phase) {
       case Phase::kProbe:
-        if (succeeded) {
-          StartCleanup();
+        if (succeeded && IsTmpfsMount(result.output)) {
+          StartTouch(Phase::kVerify);
         } else {
           repair_attempted = true;
           runtime::WslCommand create = ChildCommand(command, L"/usr/bin/mkdir");
@@ -148,27 +174,39 @@ struct WslGuiExecutionService::Implementation final
                  true);
           break;
         }
-        runtime::WslCommand mount = ChildCommand(command, L"/usr/bin/mount");
-        mount.user = L"root";
-        mount.arguments = {L"-t",        L"tmpfs", L"-o",
-                           L"mode=1777", L"tmpfs", L"/mnt/shared_memory"};
-        StartPhase(Phase::kMount, std::move(mount));
+        runtime::WslCommand chmod = ChildCommand(command, L"/usr/bin/chmod");
+        chmod.user = L"root";
+        chmod.arguments = {L"1777", L"/mnt/shared_memory"};
+        StartPhase(Phase::kChmod, std::move(chmod));
         break;
       }
+      case Phase::kChmod:
+        // A regular writable directory still puts WSLg in COPY MODE. Always
+        // mount a tmpfs after repairing the mount point, even when chmod
+        // happened to succeed.
+        StartMount();
+        break;
       case Phase::kMount:
         if (!succeeded) {
           Finish(RepairFailureStatus("tmpfs mount"), std::move(result), true);
           break;
         }
-        StartTouch(Phase::kVerify);
+        StartTouch(Phase::kVerifyMounted);
         break;
       case Phase::kVerify:
-        if (!succeeded) {
+        if (succeeded) {
+          StartCleanup();
+        } else {
+          StartMount();
+        }
+        break;
+      case Phase::kVerifyMounted:
+        if (succeeded) {
+          StartCleanup();
+        } else {
           Finish(RepairFailureStatus("write verification"), std::move(result),
                  true);
-          break;
         }
-        StartCleanup();
         break;
       case Phase::kCleanup:
         StartPhase(Phase::kLaunch, command);
@@ -189,6 +227,20 @@ struct WslGuiExecutionService::Implementation final
     runtime::WslCommand touch = ChildCommand(command, L"/usr/bin/touch");
     touch.arguments = {probe_path};
     StartPhase(touch_phase, std::move(touch));
+  }
+
+  void StartTransportProbe() {
+    runtime::WslCommand probe = ChildCommand(command, L"/usr/bin/stat");
+    probe.arguments = {L"-f", L"-c", L"%T", L"/mnt/shared_memory"};
+    StartPhase(Phase::kProbe, std::move(probe));
+  }
+
+  void StartMount() {
+    runtime::WslCommand mount = ChildCommand(command, L"/usr/bin/mount");
+    mount.user = L"root";
+    mount.arguments = {L"-t",        L"tmpfs", L"-o",
+                       L"mode=1777", L"tmpfs", L"/mnt/shared_memory"};
+    StartPhase(Phase::kMount, std::move(mount));
   }
 
   void StartCleanup() {
@@ -230,6 +282,7 @@ struct WslGuiExecutionService::Implementation final
   bool shutdown = false;
   bool cancellation_requested = false;
   std::atomic_bool repair_attempted = false;
+  std::vector<std::shared_ptr<runtime::ExecutionHandle>> deferred_cleanup;
 };
 
 WslGuiExecutionService::WslGuiExecutionService(
@@ -268,7 +321,7 @@ core::Status WslGuiExecutionService::Start(
     implementation->cancellation_requested = false;
     implementation->repair_attempted = false;
   }
-  implementation->StartTouch(Phase::kProbe);
+  implementation->StartTransportProbe();
   return core::Status::Success();
 }
 
@@ -276,15 +329,20 @@ void WslGuiExecutionService::Cancel() noexcept {
   const auto implementation = implementation_;
   if (!implementation) return;
   bool finish_without_handle = false;
+  std::unique_ptr<runtime::ExecutionHandle> handle;
   {
     std::scoped_lock lock(implementation->mutex);
     if (!implementation->active || implementation->terminal) return;
     implementation->cancellation_requested = true;
     if (implementation->handle) {
-      implementation->handle->Cancel();
+      handle = std::move(implementation->handle);
     } else {
       finish_without_handle = true;
     }
+  }
+  if (handle) {
+    handle->Cancel();
+    implementation->QueueCleanup(std::move(handle));
   }
   if (finish_without_handle) {
     implementation->Finish(
@@ -309,6 +367,10 @@ void WslGuiExecutionService::Shutdown() noexcept {
   if (handle) handle->Cancel();
   handle.reset();
   implementation->cleanup.RequestStop();
+  {
+    std::scoped_lock lock(implementation->mutex);
+    implementation->deferred_cleanup.clear();
+  }
 }
 
 bool WslGuiExecutionService::IsActive() const {

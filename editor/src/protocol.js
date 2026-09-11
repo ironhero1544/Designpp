@@ -11,6 +11,8 @@ const nativeMessageTypes = new Set([
   'set_diagnostics',
   'reveal_location',
   'set_read_only',
+  'replace_document_text',
+  'request_document_text',
   'request_save_all',
   'shutdown',
 ]);

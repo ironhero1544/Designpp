@@ -1,6 +1,45 @@
 # Design++ architecture
 
+## Layout Setup editing and persistence
+
+`LayoutSetupController` owns the heap-allocated per-window editing session.
+`LayoutSetupDraft` normalizes blank fields before core validation; adapters and
+fingerprints consume effective configuration. Setup and Monaco use the application
+message loop without stack-owned state or nested modal loops. Only one editing
+surface is enabled while JSON is open. Apply updates the draft; Save and JSON
+Ctrl+S use the same asynchronous Cell-scoped ProjectService write. Successful Save
+keeps Setup open. Failed writes preserve input. Pending Close is deferred until
+save completion, and Run consumes the saved configuration.
+
 ## Dependency direction
+
+### Tool Check migration status
+
+Toolchain profile schema v2 preserves legacy paths as custom/unverified and
+stores independent OpenLane/ORFS bundle selections. Reading v1 does not rewrite
+the settings file. Tool Check's legacy managed-root inventory is read-only:
+missing roots and present-but-unprepared roots are distinct, and neither starts
+Nix. Tool-specific version parsing rejects progress lines and unknown versions.
+The shared inventory/preparation service, resolved environment activation and
+rollback integration remain pending; root presence is not a compatibility pass.
+
+The ORFS flake execution environment selects both Yosys and OpenROAD from
+the checkout's submodules, without rewriting the installed flake lock.
+Install validation and run probing require OpenROAD `repair_timing -sequence`
+in addition to Yosys/ABC capabilities. Executable presence or `-version` alone
+does not establish ORFS compatibility. Failure must precede the READY marker.
+
+ORFS input preparation creates one immutable `PreparedPhysicalInputs` snapshot
+from the actual RTL, include files, defines, parameters, staged SDC, active
+backend configuration, and tool identity. Staging, generated configuration,
+fingerprinting, and checkpoint selection consume that same snapshot. The input
+contract is versioned independently from the project schema; lineages without
+the current contract are stale. Automatic resume is advisory: if any prepared
+input no longer matches, Generate/Update Layout keeps the old lineage and starts
+a new validated lineage. An explicit Rebuild From request rejects an
+incompatible parent because copying its prerequisites would mix different design
+inputs. Inactive OpenLane-only PDK, SCL, PDN, and I/O values remain persisted but
+do not participate in an ORFS fingerprint.
 
 ```text
 app -> gui -> application services -> core
@@ -65,11 +104,12 @@ single recursive directory watcher per Workspace and sends coalesced immutable
 path batches to the Workspace event channel; it never calls Win32 controls.
 
 The embedded editor is a presentation boundary. `MonacoEditorHost` owns one
-WebView2 controller per `VerilogWindow` and communicates with the local Monaco
+WebView2 controller per editor surface and communicates with the local Monaco
 asset by a versioned, size-bounded JSON protocol. `WorkspaceRegistry` shares the
-WebView2 environment between Verilog windows, while each Design++ process uses an
-independent UUID user-data directory. JavaScript never receives Windows paths,
-filesystem access, host objects, EDA commands, or persistence responsibilities.
+WebView2 environment between Verilog, Constraints, Liberty, and transient Layout
+JSON editors, while each Design++ process uses an independent UUID user-data
+directory. JavaScript never receives Windows paths, filesystem access, host
+objects, EDA commands, or persistence responsibilities.
 The only allowed origin is the reserved special-use virtual host
 `https://designpp-editor.example/`;
 navigation, popups, permissions, and external network content are denied.
@@ -139,6 +179,11 @@ suspended, assigned to its configured Job Object, and only then resumed. Failure
 to create or configure the Job Object, assign the child, or resume it is reported
 as a launch failure; the child is never allowed to continue unmanaged.
 
+Raw process output remains byte-exact in the RunStore. Presentation consumers
+join an incomplete trailing UTF-8 code point with the next output chunk before
+converting text for Win32 controls because pipe reads are not character
+boundaries.
+
 ## Implemented vertical slice
 
 View open request → Cell Workspace → Project load/source resolution → Verilator
@@ -146,6 +191,27 @@ probe/lint → raw log and diagnostics persistence forms the first complete vert
 slice. Toolchain profiles persist WSL distribution, managed-flow roots, PDK root,
 and CPU budget. The Doctor discovers installed distributions and their WSL version
 asynchronously before validating the selected profile and tool roots.
+The profile store is intentionally per-user because it describes installed tools;
+when a project contains `toolchain_profile_id`, Layout binds that cell to the
+matching profile and reports a missing profile instead of silently falling back to
+another cell's selection. Physical implementation values remain in the cell's
+`project.dpproj`.
+
+ToolchainSettings schema v3 separates immutable installed-environment records
+from the profile's active and rollback references. `ToolchainInventoryService`
+resolves that snapshot for Tool Check, Doctor, flow, verification, and viewers;
+`ToolchainPreparationService` only adopts an already prepared candidate or
+atomically swaps to a retained rollback environment. Inventory and ordinary
+runs never realize a Nix environment, update Git, or delete an installation.
+
+`PhysicalVerificationService` is independent from physical implementation. It
+pins a source Layout Run, final GDS, same-run schematic, recipe hash, and
+toolchain environment fingerprint before starting a new verification Run.
+`PhysicalVerificationAdapter` owns KLayout/Magic/Netgen command and report
+contracts. Process success and verification pass remain separate, empty or
+malformed reports never pass, and the raw report plus input hash manifest are
+retained. Layout only renders immutable events and marks results from another
+GDS source Run stale.
 
 The next completed presentation slice is Source double-click → managed UTF-8 load
 → Monaco model/tab → explicit atomic save → external-change conflict handling.
@@ -366,6 +432,11 @@ verifies its SHA-256 against the Design++ checkpoint manifest, and invokes
 managed flow for stale or missing output, and automatically resumes only an
 input-compatible checkpoint. Exact backend step IDs, logs, metrics, and partial
 artifacts remain RunStore data and are not promoted into the normal Layout UX.
+Physical verification reports from `Magic.DRC`, `Netgen.LVS`, `KLayout.DRC`,
+and `KLayout.XOR` are copied into `reports/openlane/` with their backend-relative
+step directories and file names intact. They are indexed as `report` artifacts
+separately from the normalized JSON summary, including partial reports produced
+by failed runs.
 
 `LayoutWindow` is the only user-facing physical implementation window. Opening
 it performs only bounded state restoration. Persisted Running or Queued runs
@@ -378,11 +449,192 @@ ASCII-stages the selected compatible GDS, probes KLayout, and launches it with a
 structured WSL command. Viewer or WSLg failure reports an actionable diagnostic
 without changing the GDS artifact result.
 
+While a physical implementation is active, Layout presents the live backend,
+service state, and current step instead of retaining the summary of a selected
+historical Run. The completed Runs table is temporarily read-only and the new
+Run is selected after its terminal record is persisted.
+
+`ManagedFlowAdapter` also exposes backend stage capabilities. `OrfsAdapter`
+implements the ORFS `synth`, `floorplan`, `place`, `cts`, `route`, and `finish`
+targets, checkpoint names, GUI target names, deterministic external
+`config.mk` generation, ordered metric parsing, and read-only platform
+discovery. `OrfsManagedFlowRunService` is selected by the managed-flow facade
+for an `orfs` project and shares staging, resource, cancellation, RunStore,
+and exactly-once event ownership with OpenLane. ORFS lineages are retained in
+`$HOME/.designpp/runs/orfs/<project-id>/<lineage-id>`. A named cross-process
+lease gives one writer exclusive ownership of a lineage while a target is
+running. Capability probing requires both the checkout contract and compatible
+OpenROAD and Yosys executables. A checkout-local installed toolchain is used
+directly when complete; otherwise the adapter enters that same ORFS checkout's
+`flake.nix` development environment. The OpenLane Nix shell is never reused for
+ORFS because its pinned Yosys/OpenROAD versions need not match the ORFS commit.
+The managed installer pins the `26Q2` candidate to commit
+`036d106273e66855cd5214d49518fd0f0df7de61` (the peeled commit, not the
+annotated tag object's ID), checks its OpenROAD
+`0e2d771c5ec38f232493c2afea738ea0200cb972` and Yosys
+`d3e297fcd479247322f83d14f42b3556db7acdfb` submodules, and initializes
+only those tools and their recursive dependencies. This OpenROAD revision does
+not include the later slang-elab dependency that triggered an unprovided fmt
+FetchContent download. The pinned environment has completed the public GCD full
+flow on nangate45 and sky130hd, including final artifact validation and headless
+ODB reload; sky130hd keeps its post-CTS EQY check enabled.
+The 26Q2 Yosys flake incorrectly selects nixpkgs ABC rather than its submodule.
+An explicit candidate-only recipe patch selects `./abc`, whose commit is checked
+as `8e401543d3ecf65e3a3631c7a271793a4d356cb0`, and replaces `nproc` with
+`NIX_BUILD_CORES`. The `read_lib -m` capability check remains mandatory; accepting
+an incompatible ABC instead would hide a real multi-Liberty synthesis failure.
+ABC's GoogleTest 1.14.0 is supplied through a fixed-hash Nix fetcher with
+FetchContent disconnected, rather than downloaded from inside the build sandbox.
+The same managed bundle pins EQY to
+`eff96db01293848b993651caa52d747f191be02e` (2026-03-31) and builds its
+plugins against the bundle's Yosys. EQY is mandatory because the sky130hd
+configuration enables post-CTS equivalence checking.
+Preparation uses cached binaries only (`--max-jobs 0`, no remote builders or
+fallback). Missing cache entries require a separately approved source-build
+workflow, which is not yet exposed by this installer. Failed candidates and
+previous active checkouts are retained for diagnosis and rollback. A clone or
+validation failure preserves the active installation. ORFS probe and execution
+use offline/cache-only Nix flags; neither may download or compile missing tools.
+After preparation succeeds, the candidate receives a `.designpp-environment`
+completion marker containing its provider, display version, and exact root
+commit. Tool Check validates this marker and the live checkout commits without
+entering a Nix shell. A source checkout without a valid marker remains
+`preparation required`. The Nix inventory parser accepts both upstream
+`nix (Nix)` and Determinate Nix version output.
+The preflight validation is read-only and does not invoke `make -n`: recursive
+ORFS Make recipes can still execute under dry-run mode and leave a partial
+lineage. Only the execution phase creates or mutates the backend workspace.
+The top-level ORFS Make graph runs with one Make job because several upstream
+recipes produce companion SDC and directory outputs as side effects and are not
+safe when sibling targets are scheduled concurrently. The acquired Design++ CPU
+token count is passed as `NUM_CORES`, so Yosys and OpenROAD retain bounded
+internal parallelism without racing the Make artifact graph.
+Generated ORFS `config.mk` assignments are exported so Tcl and shell subprocesses
+receive managed values such as `VERILOG_FILES`, `SDC_FILE`, and clock settings in
+their environment.
+ORFS explicit die/core rectangles and utilization-based floorplan initialization
+are mutually exclusive. With both rectangles present, the adapter omits
+`CORE_UTILIZATION`. Setup may leave utilization blank in this mode; the draft
+retains its previous valid automatic-mode value for a later mode switch.
+The upstream ASAP7 platform publishes only corner/model-specific sequential
+Liberty variables; the ORFS adapter therefore emits a recursive `DFF_LIB_FILE`
+compatibility expression in the generated config so Yosys receives one valid
+sequential Liberty without modifying the ORFS checkout.
+The ORFS flake's Yosys input can lag behind its synthesis scripts. Probe and
+execution both override that input with the checkout's `tools/yosys` flake,
+including its pinned ABC submodule, using `--no-write-lock-file`. Capability
+checks require Yosys `stat -hierarchy` and ABC `read_lib -m` as well as
+`read_liberty -unit_delay`. This prevents an old Yosys/ABC environment from
+being reported ready for scripts or compressed multi-Liberty inputs it cannot
+handle. Library files and synthesis scripts are not rewritten, and ABC strategy
+selection remains the platform default unless explicitly configured by the user.
+
+`OrfsDiscoveryService` marks incomplete platform directories unavailable.
+`OpenRoadViewerService` stages a verified ODB and opens it in an independent
+OpenROAD/WSLg session; viewer failure does not change the physical Run result.
+The Layout Stages dialog is the only incremental-flow entry point and Library
+Manager remains a pure library/view browser. Stage reports and artifacts open
+from that dialog, and Open in OpenROAD is enabled only when the selected Run
+contains a non-empty checkpoint for the selected stage.
+
+ORFS result collection follows the upstream finish contract: final GDS, DEF,
+ODB, and gate netlist are required, while a design LEF is optional and is
+preserved only when the selected platform emits one. ORFS 26Q2 per-stage JSON
+reports use stage-prefixed metric keys (for example,
+`finish__design__core__area`); normalization accepts those prefixes and the
+upstream `timing__*__ws` spelling while retaining every original key/value
+entry in the Run summary. The latest completed stage report is accepted when
+upstream does not emit a monolithic `metrics.json`.
+Design++ generated ORFS SDC files explicitly use nanoseconds. A managed SDC is
+staged with nanoseconds as its default command unit, while a later explicit
+`set_cmd_units -time` in that file remains authoritative. Preparation parses
+literal `create_clock -period` commands in their effective units, records the
+shortest valid clock period in nanoseconds, and uses that value for both ORFS
+`CLOCK_PERIOD` and the picosecond `ABC_CLOCK_PERIOD_IN_PS` compatibility input.
+Upstream `write_sdc` does not serialize that command unit. Each lineage therefore
+contains an executable OpenROAD wrapper and a private initialization Tcl file.
+The wrapper finds the existing Tcl command-file argument without disturbing
+trailing options such as `-metrics`, then replaces that argument with a temporary
+Tcl file that sources the unit initialization before the original ORFS script.
+This does not depend on OpenROAD's current-directory `.openroad` lookup and
+reapplies the prepared SDC's final command unit before every
+synthesis, floorplan, placement, CTS, routing, final, resume, or GUI process
+reads an intermediate SDC. The installed ORFS checkout and the user's SDC are
+not modified. Each intercepted read emits a run-local marker. A process that
+otherwise succeeds without that marker fails the managed-flow contract with
+`ORFS-SDC-UNIT` instead of publishing potentially mis-scaled timing data.
+The Setup default therefore cannot override a managed SDC clock. A design with
+no clock receives no ABC clock constraint. Timing metrics retain their raw keys
+and values; normalized Layout timing values are converted to nanoseconds only
+when the staged SDC time unit is known.
+Successful Nix invocations can report the complete temporary input-override
+diff for every `--no-write-lock-file` call. ORFS keeps those bytes in the raw
+Run log but removes that known multiline notice from live UI output; all other
+Nix and child-process warnings remain visible.
+
+Project schema v10 keeps power-distribution and I/O-placement intent in the tool-neutral physical
+implementation configuration. Boolean grid topology controls and optional
+vertical/horizontal width, spacing, pitch, and offset values are edited in a
+separate Layout PDN dialog. Empty numeric values inherit PDK defaults. The
+OpenLane adapter owns translation to `FP_PDN_*`, and every PDN value is included
+in the configuration fingerprint so an incompatible checkpoint is never reused.
+Absolute floorplans may persist both die and core rectangles; a core rectangle
+is accepted only when paired with and fully contained by its die rectangle.
+The optional tap-cell column distance is stored in micrometers and maps to
+OpenLane `FP_TAPCELL_DIST`; an empty value deliberately inherits the selected
+PDK/SCL default.
+
+The Layout Setup window is a DPI-scaled, resizable tabbed editor. Form edits stay
+in its draft until the parent Save succeeds; JSON Apply only updates that draft
+and the parent Save owns persistence. The I/O page keeps common settings visible and uses a
+nested N/S/E/W tab to edit one side without crowding the other directions.
+Structured I/O settings map to `FP_PPL_MODE`, `FP_IO_*`,
+and `ERRORS_ON_UNMATCHED_IO`; custom N/S/E/W entries deterministically generate
+a run-local ASCII-safe `pin_order.cfg`. Both structured values and generated CFG
+content participate in the physical configuration fingerprint. The OpenLane
+adapter's typed JSON codec is the only JSON-to-configuration boundary: known
+keys update the draft, safe unknown flat values remain advanced overrides, and
+managed execution, RTL, SDC, path, nested, duplicate, or oversized input is
+rejected before persistence. OpenLane-style numeric `DIE_AREA` and `CORE_AREA`
+arrays are accepted and normalized to the project model; `FP_PIN_ORDER_CFG`
+remains run-owned and is generated only from the directional I/O editor. A
+resolved-config snapshot may contain that key; the editor ignores its path
+without reading or persisting it and still applies the remaining typed values.
+The JSON surface reuses `MonacoEditorHost` with an in-memory `json` model. Text
+is requested only for Validate, Format, Apply, Save Setup, or Ctrl+S, so editing
+does not copy the full document through Win32 on every keystroke. Apply updates
+the parent dialog draft. The parent Save publishes the validated typed
+configuration to the Layout window's asynchronous atomic project-save path while
+the JSON editor and Setup dialog remain open. Save never sends `WM_CLOSE` or
+destroys a WebView2 controller. Explicit Cancel, title-bar close, and editor close
+requests are posted back to the Win32 message queue and deduplicated; the
+controller is never destroyed reentrantly while WebView2 is still delivering its
+callback. Explicit closure uses two queued phases: the WebView2 controller is shut
+down while its parent HWND is still valid, and the HWND is destroyed only on the
+following message.
+
+Physical setup is cell-scoped. Each Layout window opens the selected cell's
+`project.dpproj`, and asynchronous setup saves carry an immutable project snapshot;
+the worker writes only that snapshot and the owning UI thread publishes it after a
+successful revision-checked save. Run discovery and artifact compatibility also
+require the current project ID, so copied or stale run directories cannot make one
+cell's setup appear in another cell.
+When the Library snapshot is refreshed, each Layout session invalidates its
+pending worker events, cancels the old backend/viewer generation, and clears
+the loaded document, runs, and controls before resolving the same Cell again.
+This prevents a queued result from the previously selected Cell from being
+published into the refreshed window.
+Library validation rejects case-insensitive duplicate Cell/View IDs because those
+IDs are Windows directory names; this prevents two manifest entries from aliasing
+the same project or view storage.
+
 All WSLg viewer launches pass through `WslGuiExecutionService`. Before starting
-KLayout or GTKWave, the service verifies that the selected distribution can
-write to `/mnt/shared_memory`. If the WSLg shared-memory transport is missing or
-unusable, it mounts a distribution-local `tmpfs` with mode 1777 as root,
-verifies the repair, and only then launches the viewer. It never issues
+KLayout or GTKWave, the service silently checks whether the selected
+distribution user can write to `/mnt/shared_memory`. A root-owned 0755 directory
+is repaired to sticky world-writable mode 1777 first. If that permission repair
+cannot produce a user-writable transport, the service falls back to mounting a
+distribution-local `tmpfs` with mode 1777, verifies the repair, and only then
+launches the viewer. It never issues
 `wsl --shutdown`, so unrelated terminals and EDA runs are not interrupted.
 Health checks, repair, viewer execution, cancellation, and exactly-once
 completion remain behind the structured `ExecutionProvider` boundary.

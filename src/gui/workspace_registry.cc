@@ -8,6 +8,15 @@
 #include "designpp/gui/view_window_factory.h"
 
 namespace designpp::gui {
+namespace {
+
+bool SameWorkspace(const application::WorkspaceOpenRequest& left,
+                   const application::WorkspaceOpenRequest& right) {
+  return left.library_id == right.library_id && left.cell_id == right.cell_id &&
+         left.view_id == right.view_id;
+}
+
+}  // namespace
 
 WorkspaceRegistry::WorkspaceRegistry(HINSTANCE instance,
                                      LogCallback central_log,
@@ -22,6 +31,10 @@ WorkspaceRegistry::~WorkspaceRegistry() { CloseAll(); }
 bool WorkspaceRegistry::Open(const application::WorkspaceOpenRequest& request,
                              const application::LibraryRecord& library) {
   RemoveClosed();
+  // A callback may carry a stale LibraryRecord.  Never resolve a Cell ID from
+  // a different Library snapshot: on disk the pair determines the project
+  // directory and therefore the physical setup/run namespace.
+  if (request.library_id != library.library.id) return false;
   const auto cell =
       std::find_if(library.library.cells.begin(), library.library.cells.end(),
                    [&request](const core::Cell& value) {
@@ -36,11 +49,11 @@ bool WorkspaceRegistry::Open(const application::WorkspaceOpenRequest& request,
                                  });
   if (view == cell->views.end()) return false;
   const auto existing = std::find_if(
-      windows_.begin(), windows_.end(), [&request, view](const auto& window) {
-        return window->CanActivate(request, view->kind);
+      windows_.begin(), windows_.end(), [&request](const WindowEntry& entry) {
+        return SameWorkspace(entry.request, request);
       });
   if (existing != windows_.end()) {
-    (*existing)->Activate(request);
+    existing->window->Activate(request);
     return true;
   }
   ViewWindowDependencies dependencies{
@@ -52,7 +65,7 @@ bool WorkspaceRegistry::Open(const application::WorkspaceOpenRequest& request,
   std::unique_ptr<ViewWindow> window =
       CreateViewWindow(dependencies, request, library, view->kind);
   if (!window) return false;
-  windows_.push_back(std::move(window));
+  windows_.push_back({request, std::move(window)});
   return true;
 }
 
@@ -80,22 +93,22 @@ bool WorkspaceRegistry::OpenLiberty(const application::LibraryRecord& library) {
 
 bool WorkspaceRegistry::PrepareCloseAll() {
   RemoveClosed();
-  for (const auto& window : windows_) {
-    if (!window->PrepareClose()) return false;
+  for (const WindowEntry& entry : windows_) {
+    if (!entry.window->PrepareClose()) return false;
   }
   return true;
 }
 
 void WorkspaceRegistry::CloseAll() {
-  for (const auto& window : windows_) window->Close();
+  for (const WindowEntry& entry : windows_) entry.window->Close();
   windows_.clear();
   for (const auto& window : liberty_windows_) window->Close();
   liberty_windows_.clear();
 }
 
 bool WorkspaceRegistry::TranslateAccelerator(const MSG& message) const {
-  for (const auto& window : windows_) {
-    if (window->TranslateAccelerator(message)) return true;
+  for (const WindowEntry& entry : windows_) {
+    if (entry.window->TranslateAccelerator(message)) return true;
   }
   for (const auto& window : liberty_windows_) {
     if (window->TranslateAccelerator(message)) return true;
@@ -106,8 +119,8 @@ bool WorkspaceRegistry::TranslateAccelerator(const MSG& message) const {
 void WorkspaceRegistry::RefreshLibrary(
     const application::LibraryRecord& library) {
   RemoveClosed();
-  for (const auto& window : windows_) {
-    window->RefreshLibrary(library);
+  for (const WindowEntry& entry : windows_) {
+    entry.window->RefreshLibrary(library);
   }
   for (const auto& window : liberty_windows_) {
     window->RefreshLibrary(library);
@@ -118,11 +131,12 @@ bool WorkspaceRegistry::CloseFor(std::string_view library_id,
                                  std::string_view cell_id) {
   RemoveClosed();
   std::vector<ViewWindow*> targets;
-  for (const auto& window : windows_) {
+  for (const WindowEntry& entry : windows_) {
     const bool matches = cell_id.empty()
-                             ? window->BelongsToLibrary(library_id)
-                             : window->MatchesCell(library_id, cell_id);
-    if (matches) targets.push_back(window.get());
+                             ? entry.request.library_id == library_id
+                             : entry.request.library_id == library_id &&
+                                   entry.request.cell_id == cell_id;
+    if (matches) targets.push_back(entry.window.get());
   }
   for (ViewWindow* window : targets) {
     if (!window->PrepareClose()) return false;
@@ -138,7 +152,9 @@ bool WorkspaceRegistry::CloseFor(std::string_view library_id,
 }
 
 void WorkspaceRegistry::RemoveClosed() {
-  std::erase_if(windows_, [](const auto& window) { return !window->IsOpen(); });
+  std::erase_if(windows_, [](const WindowEntry& entry) {
+    return !entry.window->IsOpen();
+  });
   std::erase_if(liberty_windows_,
                 [](const auto& window) { return !window->IsOpen(); });
 }

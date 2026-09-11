@@ -4,6 +4,7 @@
 #define DESIGNPP_RUNTIME_TOOL_CATALOG_H_
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "designpp/runtime/process_runner.h"
@@ -49,6 +50,11 @@ struct ToolDefinition {
 
 // Builds the complete tool catalog in stable display order.
 [[nodiscard]] std::vector<ToolDefinition> BuildToolCatalog();
+
+// Parses only recognized version output; progress and diagnostics are not
+// versions.
+[[nodiscard]] std::wstring ParseToolVersion(ToolId id,
+                                            std::wstring_view output);
 
 // Returns a localized display name for an installation method.
 [[nodiscard]] std::wstring InstallMethodName(InstallMethod method);

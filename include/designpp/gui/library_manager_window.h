@@ -99,6 +99,8 @@ class LibraryManagerWindow final {
   void PopulateLibraryList();
   void HandleLibraryTreeSelection();
   void HandleLibraryListDoubleClick();
+  void SelectBrowserContext(std::string_view library_id,
+                            std::string_view cell_id, std::string_view view_id);
   void ShowLibraryContextMenu(POINT screen_point);
   void CreateLibraryItem(int command_id);
   void EditLibraryItem();

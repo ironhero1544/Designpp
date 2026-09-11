@@ -180,8 +180,9 @@ std::optional<bool> ReadBool(std::string_view json, std::string_view name) {
 bool IsAllowedType(std::string_view type) {
   return type == "ready_for_initialize" || type == "ready" ||
          type == "active_document_changed" || type == "document_changed" ||
-         type == "save_document" || type == "close_document_requested" ||
-         type == "editor_command" || type == "fatal_error";
+         type == "document_text" || type == "save_document" ||
+         type == "close_document_requested" || type == "editor_command" ||
+         type == "fatal_error";
 }
 
 }  // namespace

@@ -62,6 +62,8 @@ class MonacoEditorHost final {
   void RevealLocation(std::string_view document_id, std::uint32_t line,
                       std::uint32_t column);
   void SetReadOnly(std::string_view document_id, bool read_only);
+  void ReplaceDocumentText(std::string_view document_id, std::string_view text);
+  void RequestDocumentText(std::string_view document_id);
   void RequestSaveAll();
   void Shutdown();
 

@@ -47,6 +47,9 @@ struct RunRecord {
   std::string stage;
   std::string tool;
   std::string tool_version;
+  std::string source_run_id;
+  std::string environment_id;
+  std::string environment_fingerprint;
   RunStatus status = RunStatus::kPending;
   std::string started_utc;
   std::string finished_utc;

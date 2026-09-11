@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "designpp/application/project_service.h"
@@ -25,6 +26,8 @@ struct SynthesisFingerprint {
 
 [[nodiscard]] core::Result<std::string> CalculateFileSha256(
     const std::filesystem::path& path);
+
+[[nodiscard]] core::Result<std::string> CalculateSha256(std::string_view bytes);
 
 [[nodiscard]] core::Result<SynthesisFingerprint> CalculateSynthesisFingerprint(
     const core::Project& project, const std::vector<ResolvedSource>& sources,

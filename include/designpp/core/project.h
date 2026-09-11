@@ -47,7 +47,57 @@ struct TimingConfiguration {
   std::string sdc_path;
 };
 
+struct PowerDistributionConfiguration {
+  bool multilayer = true;
+  bool core_ring = false;
+  bool enable_rails = true;
+  std::optional<std::string> vertical_width_um;
+  std::optional<std::string> horizontal_width_um;
+  std::optional<std::string> vertical_spacing_um;
+  std::optional<std::string> horizontal_spacing_um;
+  std::optional<std::string> vertical_pitch_um;
+  std::optional<std::string> horizontal_pitch_um;
+  std::optional<std::string> vertical_offset_um;
+  std::optional<std::string> horizontal_offset_um;
+};
+
+struct IoPinSideConfiguration {
+  std::optional<std::string> minimum_distance_um;
+  bool bit_major = false;
+  std::vector<std::string> entries;
+};
+
+struct IoPlacementConfiguration {
+  std::string algorithm = "matching";
+  std::optional<std::string> minimum_distance_um;
+  std::optional<std::string> vertical_length_um;
+  std::optional<std::string> horizontal_length_um;
+  std::optional<std::string> vertical_thickness_multiplier;
+  std::optional<std::string> horizontal_thickness_multiplier;
+  std::optional<std::string> vertical_extension_um;
+  std::optional<std::string> horizontal_extension_um;
+  std::optional<std::string> vertical_layer;
+  std::optional<std::string> horizontal_layer;
+  std::string unmatched_policy = "both";
+  IoPinSideConfiguration north;
+  IoPinSideConfiguration south;
+  IoPinSideConfiguration east;
+  IoPinSideConfiguration west;
+};
+
+// Configuration owned by the OpenROAD Flow Scripts backend.  It is kept
+// alongside the common physical implementation settings so switching
+// backends does not discard the other backend's configuration.
+struct OrfsConfiguration {
+  std::string platform = "sky130hd";
+  std::string flow_variant = "base";
+  std::string advanced_variables_json = "{}";
+};
+
 struct PhysicalImplementationConfiguration {
+  // Schema 11: fields whose value is inherited, rather than user-specified.
+  // Optional numeric fields continue to represent inheritance with nullopt.
+  std::vector<std::string> automatic_fields;
   std::string backend_id = "openlane2";
   std::string pdk = "sky130A";
   std::string standard_cell_library = "sky130_fd_sc_hd";
@@ -56,13 +106,30 @@ struct PhysicalImplementationConfiguration {
   std::uint32_t core_utilization_percent = 40;
   std::optional<std::string> placement_density_percent;
   std::vector<std::string> die_area;
+  std::vector<std::string> core_area;
+  std::optional<std::string> tap_cell_distance_um;
   std::string pnr_sdc_path;
   std::string signoff_sdc_path;
+  PowerDistributionConfiguration power_distribution;
+  IoPlacementConfiguration io_placement;
   std::string advanced_overrides_json = "{}";
+  OrfsConfiguration orfs;
+};
+
+// Selects physical-verification recipes for one Cell. Recipe contents are
+// owned by the toolchain settings so multiple Cells can share an immutable
+// rule revision without sharing mutable editor state.
+struct PhysicalVerificationConfiguration {
+  std::string drc_recipe_id;
+  std::string lvs_recipe_id;
+  std::string top_cell;
+  std::string power_net;
+  std::string ground_net;
+  std::string parameters_json = "{}";
 };
 
 struct Project {
-  static constexpr std::uint32_t kSchemaVersion = 6;
+  static constexpr std::uint32_t kSchemaVersion = 12;
 
   std::uint32_t schema_version = kSchemaVersion;
   std::string id;
@@ -79,6 +146,7 @@ struct Project {
   SynthesisConfiguration synthesis;
   TimingConfiguration timing;
   PhysicalImplementationConfiguration physical_implementation;
+  PhysicalVerificationConfiguration physical_verification;
   std::vector<std::string> include_directories;
   std::vector<std::string> defines;
   std::vector<std::string> parameters;
@@ -88,6 +156,13 @@ struct Project {
 };
 
 [[nodiscard]] Status ValidateProject(const Project& project);
+[[nodiscard]] bool UsesAutomaticValue(
+    const PhysicalImplementationConfiguration& configuration,
+    std::string_view field);
+[[nodiscard]] PhysicalImplementationConfiguration ResolvePhysicalDefaults(
+    PhysicalImplementationConfiguration configuration);
+[[nodiscard]] Status ValidatePhysicalImplementationConfiguration(
+    const PhysicalImplementationConfiguration& configuration);
 [[nodiscard]] bool IsSafeRelativePath(std::string_view path);
 
 }  // namespace designpp::core

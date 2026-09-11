@@ -18,6 +18,14 @@
 namespace designpp::runtime {
 namespace {
 
+[[nodiscard]] std::size_t Utf8SequenceLength(unsigned char lead) {
+  if ((lead & 0x80U) == 0) return 1;
+  if ((lead & 0xE0U) == 0xC0U) return 2;
+  if ((lead & 0xF0U) == 0xE0U) return 3;
+  if ((lead & 0xF8U) == 0xF0U) return 4;
+  return 1;
+}
+
 class UniqueHandle final {
  public:
   UniqueHandle() noexcept = default;
@@ -145,6 +153,32 @@ class UniqueHandle final {
 }
 
 }  // namespace
+
+std::string TakeCompleteUtf8Chunk(std::string_view bytes,
+                                  std::string* remainder) {
+  if (remainder == nullptr) return std::string(bytes);
+
+  std::string complete = std::move(*remainder);
+  remainder->clear();
+  complete.append(bytes);
+  if (complete.empty()) return complete;
+
+  std::size_t lead_index = complete.size() - 1;
+  std::size_t continuation_count = 0;
+  while (lead_index > 0 && continuation_count < 3 &&
+         (static_cast<unsigned char>(complete[lead_index]) & 0xC0U) == 0x80U) {
+    --lead_index;
+    ++continuation_count;
+  }
+  const std::size_t available = complete.size() - lead_index;
+  const std::size_t required =
+      Utf8SequenceLength(static_cast<unsigned char>(complete[lead_index]));
+  if (required > available) {
+    *remainder = complete.substr(lead_index);
+    complete.resize(lead_index);
+  }
+  return complete;
+}
 
 struct ProcessSession::Implementation final {
   static constexpr std::size_t kMaximumQueuedInputBytes = 64 * 1024;

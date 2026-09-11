@@ -209,6 +209,24 @@ window.chrome.webview.addEventListener('message', (event) => {
     if (message.document_id === activeDocumentId) {
       editor.updateOptions({readOnly: Boolean(message.read_only)});
     }
+  } else if (message.type === 'replace_document_text') {
+    const state = documents.get(message.document_id);
+    if (state && !state.readOnly && typeof message.text === 'string') {
+      state.model.setValue(message.text);
+      state.dirty = true;
+      state.version = state.model.getVersionId();
+      renderTabs();
+    }
+  } else if (message.type === 'request_document_text') {
+    const state = documents.get(message.document_id);
+    if (state) {
+      postToNative('document_text', sessionId, {
+        document_id: state.id,
+        version: state.version,
+        text: state.model.getValue(),
+        dirty: state.dirty,
+      });
+    }
   } else if (message.type === 'request_save_all') {
     for (const state of documents.values()) {
       if (state.dirty) requestSave(state.id);

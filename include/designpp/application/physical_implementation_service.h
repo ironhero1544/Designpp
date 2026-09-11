@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "designpp/application/managed_flow_run_service.h"
@@ -32,6 +34,9 @@ struct PhysicalImplementationEvent {
   std::string output;
   adapters::ManagedFlowProgress progress;
   adapters::ManagedFlowMetrics metrics;
+  std::vector<core::Diagnostic> diagnostics;
+  std::string failure_stage;
+  std::string failure_code;
   std::shared_ptr<RunRecord> run;
   std::filesystem::path gds_path;
   bool reused = false;
@@ -39,6 +44,15 @@ struct PhysicalImplementationEvent {
 
 using PhysicalImplementationEventSink =
     std::function<void(PhysicalImplementationEvent)>;
+
+// Produces a deterministic, length-delimited description of every typed
+// physical implementation input.  It is stored in backend summaries in an
+// encoded form so compatibility checks do not depend on the summary parser's
+// treatment of user-provided JSON or whitespace.
+[[nodiscard]] std::string BuildPhysicalImplementationConfigurationContract(
+    const ManagedFlowRunRequest& request, std::string_view tool_version);
+[[nodiscard]] std::string EncodePhysicalImplementationContract(
+    std::string_view contract);
 
 // Returns a verified checkpoint resume request for a failed or interrupted
 // physical implementation run whose inputs still match the current request.
@@ -65,7 +79,8 @@ class PhysicalImplementationService final {
  private:
   void InspectAndStart(ManagedFlowRunRequest request,
                        PhysicalImplementationEventSink sink,
-                       std::stop_token stop_token);
+                       std::stop_token scheduler_stop_token,
+                       std::stop_token operation_stop_token);
   void Forward(ManagedFlowRunEvent event);
 
   mutable std::mutex mutex_;
@@ -76,6 +91,7 @@ class PhysicalImplementationService final {
   bool active_ = false;
   bool terminal_delivered_ = false;
   bool shutdown_ = false;
+  std::stop_source operation_stop_source_;
 };
 
 }  // namespace designpp::application

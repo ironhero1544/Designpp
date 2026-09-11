@@ -29,6 +29,7 @@ struct OpenLaneRequest {
   std::vector<std::string> parameters;
   std::filesystem::path pnr_sdc;
   std::filesystem::path signoff_sdc;
+  std::filesystem::path pin_order_cfg;
   std::string backend_workspace;
   std::string staging_workspace;
   std::uint32_t cpu_threads = 1;
@@ -51,6 +52,14 @@ class OpenLane2Adapter final : public ManagedFlowAdapter {
   [[nodiscard]] core::Status Validate(const OpenLaneRequest& request) const;
   [[nodiscard]] core::Status ValidateAdvancedOverrides(
       std::string_view json) const;
+  [[nodiscard]] core::Result<std::string> BuildPinOrderConfiguration(
+      const core::PhysicalImplementationConfiguration& configuration) const;
+  [[nodiscard]] core::Result<std::string> EncodeEditableConfiguration(
+      const core::PhysicalImplementationConfiguration& configuration) const;
+  [[nodiscard]] core::Result<core::PhysicalImplementationConfiguration>
+  ApplyEditableConfiguration(
+      std::string_view json,
+      const core::PhysicalImplementationConfiguration& current) const;
   [[nodiscard]] core::Result<OpenLanePlan> BuildPlan(
       const OpenLaneRequest& request) const;
   [[nodiscard]] std::optional<ManagedFlowProgress> ParseProgress(
@@ -59,6 +68,7 @@ class OpenLane2Adapter final : public ManagedFlowAdapter {
       std::string_view output) const override;
   [[nodiscard]] core::Result<ManagedFlowMetrics> ParseMetrics(
       std::string_view metrics_json) const override;
+  [[nodiscard]] std::vector<ManagedFlowStageInfo> Stages() const override;
   [[nodiscard]] core::StageId ClassifyStep(std::string_view step_id) const;
   [[nodiscard]] ManagedFlowArtifactSet DiscoverAvailableArtifacts(
       const std::filesystem::path& root) const;

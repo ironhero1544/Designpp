@@ -85,7 +85,7 @@ class TemporarySynthesisWorkspace final {
 
 struct FakeExecutionState {
   std::atomic_bool cancelled = false;
-  std::atomic_bool completion_callback_active = false;
+  std::atomic<DWORD> completion_callback_thread_id = 0;
   std::atomic_bool destroyed_during_completion_callback = false;
 };
 
@@ -95,7 +95,7 @@ class ControlledExecutionHandle final : public runtime::ExecutionHandle {
       : state_(std::move(state)) {}
 
   ~ControlledExecutionHandle() override {
-    if (state_->completion_callback_active.load()) {
+    if (state_->completion_callback_thread_id.load() == GetCurrentThreadId()) {
       state_->destroyed_during_completion_callback = true;
     }
   }
@@ -193,9 +193,9 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
         std::scoped_lock lock(mutex_);
         state = pending_.at(index).state;
       }
-      state->completion_callback_active = true;
+      state->completion_callback_thread_id = GetCurrentThreadId();
       callback(result);
-      state->completion_callback_active = false;
+      state->completion_callback_thread_id = 0;
     }
   }
 

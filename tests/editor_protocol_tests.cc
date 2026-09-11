@@ -10,7 +10,8 @@ using Microsoft::VisualStudio::CppUnitTestFramework::Assert;
 
 namespace designpp::tests {
 
-// clang-format cannot parse the CppUnitTest class and method declaration macros.
+// clang-format cannot parse the CppUnitTest class and method declaration
+// macros.
 // clang-format off
 TEST_CLASS(EditorProtocolTests) {
  public:
@@ -31,6 +32,18 @@ TEST_CLASS(EditorProtocolTests) {
     auto wrong_session = application::DecodeEditorWebMessage(
         R"({"protocol":1,"type":"ready","session_id":"two"})", "one");
     Assert::IsFalse(wrong_session.Ok());
+  }
+
+  TEST_METHOD(DecodesRequestedDocumentText) {
+    const auto decoded = application::DecodeEditorWebMessage(
+        R"({"protocol":1,"type":"document_text","session_id":"session","document_id":"layout-json","version":4,"dirty":true,"text":"{\n  \"FP_CORE_UTIL\": 40\n}"})",
+        "session");
+    Assert::IsTrue(decoded.Ok());
+    Assert::AreEqual(std::string("layout-json"),
+                     decoded.Value().document_id);
+    Assert::IsTrue(decoded.Value().dirty);
+    Assert::IsTrue(decoded.Value().text.find("FP_CORE_UTIL") !=
+                   std::string::npos);
   }
 
   TEST_METHOD(IgnoresNestedEnvelopeKeys) {

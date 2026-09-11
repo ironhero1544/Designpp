@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "designpp/gui/constraints_window.h"
+#include "designpp/gui/layout_json_editor.h"
 #include "designpp/gui/layout_window.h"
 #include "designpp/gui/synthesis_window.h"
 #include "designpp/gui/timing_window.h"
@@ -74,8 +75,16 @@ std::unique_ptr<ViewWindow> CreateLayoutWindow(
     const application::WorkspaceOpenRequest& request,
     const application::LibraryRecord& library) {
   auto window = std::make_unique<LayoutWindow>();
-  if (!window->Create(dependencies.instance, request, library,
-                      dependencies.central_log, dependencies.library_changed)) {
+  if (!window->Create(
+          dependencies.instance, request, library, dependencies.central_log,
+          dependencies.library_changed,
+          [environment = dependencies.editor_environment](
+              HWND owner,
+              const core::PhysicalImplementationConfiguration& configuration,
+              LayoutJsonApplyCallback save_configuration) {
+            return ShowLayoutJsonEditor(owner, environment, configuration,
+                                        save_configuration);
+          })) {
     return nullptr;
   }
   return window;

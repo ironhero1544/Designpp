@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace designpp::runtime {
@@ -37,6 +38,12 @@ struct ProcessResult {
 
 using OutputCallback = std::function<void(std::string)>;
 using CompletionCallback = std::function<void(ProcessResult)>;
+
+// Returns bytes ending on a complete UTF-8 code-point boundary. An incomplete
+// trailing sequence is retained in `remainder` and prepended to the next call.
+// This does not normalize or replace malformed complete input.
+[[nodiscard]] std::string TakeCompleteUtf8Chunk(std::string_view bytes,
+                                                std::string* remainder);
 
 // Owns one asynchronous Windows process and its cancellation job object.
 class ProcessSession final {

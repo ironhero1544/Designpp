@@ -69,7 +69,9 @@ Windows 선택 기능을 처음 활성화하는 시스템에서는 재부팅이 
   1.9 계열 설치
 - Nix: OpenLane 공식 설치 명령과 binary cache 설정
 - OpenLane 2: `$HOME/.designpp/toolchains/openlane2`에 clone/update 후 smoke test
-- ORFS: `$HOME/.designpp/toolchains/orfs`에 recursive clone/update
+- ORFS: 검증된 `26Q3` release를 고유 candidate 디렉터리에 submodule 없이
+  clone하고 해당 `flake.nix`의 Yosys/OpenROAD 환경 검증 후 기존 checkout과
+  교체. clone 또는 검증 실패 시 기존 설치본 보존
 
 설치 단계가 끝나면 전체 도구 검사를 자동으로 다시 실행해 목록과 버전을
 갱신한다.

@@ -12,6 +12,8 @@
 #include <sstream>
 #include <utility>
 
+#include "designpp/adapters/managed_flow_adapter_factory.h"
+#include "designpp/application/orfs_managed_flow_run_service.h"
 #include "designpp/application/synthesis_fingerprint.h"
 #include "designpp/runtime/path_mapper.h"
 #include "designpp/runtime/resource_coordinator.h"
@@ -189,12 +191,77 @@ void CopyPartialReports(const std::filesystem::path& source_root,
   }
 }
 
+bool IsPhysicalVerificationReport(const std::filesystem::path& relative_path) {
+  std::string path = relative_path.generic_string();
+  std::transform(path.begin(), path.end(), path.begin(), [](char character) {
+    return static_cast<char>(
+        std::tolower(static_cast<unsigned char>(character)));
+  });
+  std::string extension = relative_path.extension().string();
+  std::transform(extension.begin(), extension.end(), extension.begin(),
+                 [](char character) {
+                   return static_cast<char>(
+                       std::tolower(static_cast<unsigned char>(character)));
+                 });
+  const bool report_extension = extension == ".rpt" || extension == ".report" ||
+                                extension == ".txt" || extension == ".xml" ||
+                                extension == ".log" || extension == ".drc" ||
+                                extension == ".lvs" || extension.empty();
+  if (!report_extension) return false;
+  constexpr std::array<std::string_view, 8> kReportSteps = {
+      "magic.drc",  "magic-drc",  "magic_drc",   "netgen.lvs",
+      "netgen-lvs", "netgen_lvs", "klayout.drc", "klayout.xor"};
+  return std::any_of(kReportSteps.begin(), kReportSteps.end(),
+                     [&path](std::string_view step) {
+                       return path.find(step) != std::string::npos;
+                     });
+}
+
+void CopyPhysicalVerificationReports(
+    const std::filesystem::path& source_root,
+    const std::filesystem::path& destination_root,
+    const std::shared_ptr<RunRecord>& run, std::string_view fingerprint,
+    bool partial, std::vector<RunArtifact>* artifacts) {
+  constexpr std::size_t kMaximumFiles = 256;
+  constexpr std::uintmax_t kMaximumBytes = 256ULL * 1024ULL * 1024ULL;
+  std::size_t copied_files = 0;
+  std::uintmax_t copied_bytes = 0;
+  std::error_code error;
+  for (std::filesystem::recursive_directory_iterator
+           iterator(source_root, error),
+       end;
+       !error && iterator != end && copied_files < kMaximumFiles;
+       iterator.increment(error)) {
+    if (!iterator->is_regular_file()) continue;
+    const std::filesystem::path relative =
+        std::filesystem::relative(iterator->path(), source_root, error);
+    if (error || relative.empty()) break;
+    if (!IsPhysicalVerificationReport(relative)) continue;
+    const std::uintmax_t size = iterator->file_size(error);
+    if (error) break;
+    if (size == 0 || copied_bytes + size > kMaximumBytes) continue;
+    const std::filesystem::path destination = destination_root / relative;
+    const core::Status copied = CopyFile(iterator->path(), destination);
+    if (!copied.Ok()) continue;
+    std::string format = destination.extension().string();
+    if (!format.empty() && format.front() == '.') format.erase(0, 1);
+    if (format.empty()) format = "text";
+    AddArtifact(run, "report", std::move(format), destination,
+                std::string(fingerprint), partial, artifacts);
+    copied_bytes += size;
+    ++copied_files;
+  }
+}
+
 }  // namespace
 
 struct ManagedFlowRunService::Implementation final
     : public std::enable_shared_from_this<Implementation> {
   explicit Implementation(runtime::ExecutionProvider* execution_provider)
-      : provider(execution_provider), scheduler(1) {}
+      : provider(execution_provider),
+        scheduler(1),
+        orfs_service(
+            std::make_unique<OrfsManagedFlowRunService>(execution_provider)) {}
 
   void Emit(ManagedFlowRunEvent event) {
     ManagedFlowRunEventSink event_sink;
@@ -253,7 +320,7 @@ struct ManagedFlowRunService::Implementation final
               adapters::ManagedFlowMetrics completed_metrics = {}) {
     ManagedFlowRunEvent event;
     ManagedFlowRunEventSink event_sink;
-    std::unique_ptr<runtime::ExecutionHandle> completed_handle;
+    std::shared_ptr<runtime::ExecutionHandle> completed_handle;
     {
       std::scoped_lock lock(mutex);
       if (shutdown || terminal_delivered) return;
@@ -337,35 +404,39 @@ struct ManagedFlowRunService::Implementation final
 
   void StoreHandle(std::unique_ptr<runtime::ExecutionHandle> next) {
     bool cancel = false;
-    std::unique_ptr<runtime::ExecutionHandle> previous;
+    std::shared_ptr<runtime::ExecutionHandle> previous;
+    std::shared_ptr<runtime::ExecutionHandle> current;
     {
       std::scoped_lock lock(mutex);
       if (shutdown || terminal_delivered) {
-        previous = std::move(next);
+        previous = std::shared_ptr<runtime::ExecutionHandle>(std::move(next));
       } else {
         previous = std::move(handle);
-        handle = std::move(next);
+        handle = std::shared_ptr<runtime::ExecutionHandle>(std::move(next));
       }
       cancel = cancellation_requested;
+      current = handle;
     }
     QueueHandleCleanup(std::move(previous));
-    if (cancel && handle) handle->Cancel();
+    if (cancel && current) current->Cancel();
   }
 
   void QueueHandleCleanup(
-      std::unique_ptr<runtime::ExecutionHandle> completed_handle) {
+      std::shared_ptr<runtime::ExecutionHandle> completed_handle) {
     if (!completed_handle) return;
-    auto shared_handle =
-        std::shared_ptr<runtime::ExecutionHandle>(std::move(completed_handle));
+    auto holder = std::make_shared<std::shared_ptr<runtime::ExecutionHandle>>(
+        std::move(completed_handle));
     const bool queued =
-        cleanup_scheduler.Submit([shared_handle](std::stop_token) {
+        cleanup_scheduler.Submit([holder](std::stop_token) mutable {
           // Destruction on this worker may join the process callback thread.
           // It must never happen from inside that callback itself.
-          static_cast<void>(shared_handle->IsRunning());
+          auto handle = std::move(*holder);
+          holder.reset();
+          static_cast<void>(handle->IsRunning());
         });
     if (!queued) {
       std::scoped_lock lock(mutex);
-      deferred_handle_cleanup.push_back(std::move(shared_handle));
+      deferred_handle_cleanup.push_back(std::move(*holder));
     }
   }
 
@@ -383,6 +454,8 @@ struct ManagedFlowRunService::Implementation final
       return;
     }
     run = std::make_shared<RunRecord>(std::move(begun).Value());
+    run->environment_id = request.environment_id;
+    run->environment_fingerprint = request.environment_fingerprint;
     if (!probe_output.empty()) {
       const core::Status ignored = run_store.AppendLog(*run, probe_output);
       (void)ignored;
@@ -414,10 +487,19 @@ struct ManagedFlowRunService::Implementation final
     adapter_request.cpu_threads = request.project.cpu_budget;
     std::size_t source_index = 0;
     std::ostringstream fingerprint_manifest;
+    // Keep the cell identity in the input fingerprint.  RunStore is normally
+    // already cell-local, but this prevents a copied or repaired run directory
+    // from becoming compatible with a different cell that happens to have the
+    // same RTL and physical settings.
     fingerprint_manifest
+        << "project:" << request.project.id << '\n'
+        << "library:" << request.project.library_id << '\n'
+        << "cell:" << request.project.cell_id << '\n'
         << request.project.top_module << '\n'
         << request.profile.openlane_root << '\n'
         << request.profile.pdk_root << '\n'
+        << "environment:" << request.environment_id << ':'
+        << request.environment_fingerprint << '\n'
         << request.project.physical_implementation.pdk << '\n'
         << request.project.physical_implementation.standard_cell_library
         << '\n';
@@ -524,6 +606,28 @@ struct ManagedFlowRunService::Implementation final
       CompletePreparationFailure(std::move(sdc_status));
       return;
     }
+    auto pin_order = adapter.BuildPinOrderConfiguration(
+        request.project.physical_implementation);
+    if (!pin_order.Ok()) {
+      CompletePreparationFailure(pin_order.GetStatus());
+      return;
+    }
+    if (!pin_order.Value().empty()) {
+      const std::filesystem::path pin_order_path =
+          staging_directory / "constraints" / "pin_order.cfg";
+      std::ofstream pin_order_output(pin_order_path,
+                                     std::ios::binary | std::ios::trunc);
+      pin_order_output << pin_order.Value();
+      pin_order_output.close();
+      if (!pin_order_output) {
+        CompletePreparationFailure(
+            {core::ErrorCode::kIoError,
+             "Cannot stage the OpenLane pin-order configuration", 0});
+        return;
+      }
+      adapter_request.pin_order_cfg = pin_order_path.filename();
+      fingerprint_manifest << "pin_order:\n" << pin_order.Value();
+    }
     for (const std::string& define : request.project.defines) {
       fingerprint_manifest << "define:" << define << '\n';
     }
@@ -550,6 +654,50 @@ struct ManagedFlowRunService::Implementation final
          request.project.physical_implementation.die_area) {
       fingerprint_manifest << "die:" << coordinate << '\n';
     }
+    for (const std::string& coordinate :
+         request.project.physical_implementation.core_area) {
+      fingerprint_manifest << "core:" << coordinate << '\n';
+    }
+    fingerprint_manifest << "tap_cell_distance:"
+                         << request.project.physical_implementation
+                                .tap_cell_distance_um.value_or("")
+                         << '\n';
+    const core::PowerDistributionConfiguration& pdn =
+        request.project.physical_implementation.power_distribution;
+    fingerprint_manifest << "pdn_multilayer:" << pdn.multilayer << '\n'
+                         << "pdn_core_ring:" << pdn.core_ring << '\n'
+                         << "pdn_enable_rails:" << pdn.enable_rails << '\n';
+    const auto fingerprint_pdn = [&fingerprint_manifest](
+                                     std::string_view name,
+                                     const std::optional<std::string>& value) {
+      fingerprint_manifest << name << ':' << value.value_or("") << '\n';
+    };
+    fingerprint_pdn("pdn_vwidth", pdn.vertical_width_um);
+    fingerprint_pdn("pdn_hwidth", pdn.horizontal_width_um);
+    fingerprint_pdn("pdn_vspacing", pdn.vertical_spacing_um);
+    fingerprint_pdn("pdn_hspacing", pdn.horizontal_spacing_um);
+    fingerprint_pdn("pdn_vpitch", pdn.vertical_pitch_um);
+    fingerprint_pdn("pdn_hpitch", pdn.horizontal_pitch_um);
+    fingerprint_pdn("pdn_voffset", pdn.vertical_offset_um);
+    fingerprint_pdn("pdn_hoffset", pdn.horizontal_offset_um);
+    const core::IoPlacementConfiguration& io =
+        request.project.physical_implementation.io_placement;
+    fingerprint_manifest << "io_algorithm:" << io.algorithm << '\n'
+                         << "io_unmatched:" << io.unmatched_policy << '\n';
+    const auto fingerprint_io = [&fingerprint_manifest](
+                                    std::string_view name,
+                                    const std::optional<std::string>& value) {
+      fingerprint_manifest << name << ':' << value.value_or("") << '\n';
+    };
+    fingerprint_io("io_min_distance", io.minimum_distance_um);
+    fingerprint_io("io_vlength", io.vertical_length_um);
+    fingerprint_io("io_hlength", io.horizontal_length_um);
+    fingerprint_io("io_vthickness", io.vertical_thickness_multiplier);
+    fingerprint_io("io_hthickness", io.horizontal_thickness_multiplier);
+    fingerprint_io("io_vextend", io.vertical_extension_um);
+    fingerprint_io("io_hextend", io.horizontal_extension_um);
+    fingerprint_io("io_vlayer", io.vertical_layer);
+    fingerprint_io("io_hlayer", io.horizontal_layer);
     for (const auto& [name, path] :
          std::array<std::pair<std::string_view, std::filesystem::path>, 2>{
              {{"pnr_sdc", adapter_request.pnr_sdc},
@@ -637,8 +785,40 @@ struct ManagedFlowRunService::Implementation final
       diagnostic.code = "OPENLANE-PREPARE";
       diagnostic.message = status.message;
       diagnostics.push_back(diagnostic);
-      const core::Status ignored = run_store.Complete(
-          run.get(), RunStatus::kFailed, 0, diagnostics, {}, {});
+      std::vector<RunArtifact> artifacts;
+      const std::filesystem::path artifact_directory =
+          run->directory / "artifacts";
+      const std::filesystem::path reports_directory =
+          run->directory / "reports";
+      std::error_code error;
+      std::filesystem::create_directories(artifact_directory, error);
+      std::filesystem::create_directories(reports_directory, error);
+      const auto preserve = [this, &artifacts](
+                                const std::filesystem::path& source,
+                                std::string_view name) {
+        if (source.empty() || !CopyFile(source, run->directory / "artifacts" /
+                                                    std::filesystem::path(name))
+                                   .Ok()) {
+          return;
+        }
+        const std::filesystem::path destination =
+            run->directory / "artifacts" / std::filesystem::path(name);
+        AddArtifact(run, std::string(name), destination.extension().string(),
+                    destination, fingerprint, true, &artifacts);
+      };
+      if (!staging_directory.empty()) {
+        preserve(staging_directory / "config.json", "config.json");
+        preserve(staging_directory / "fingerprint.txt", "fingerprint.txt");
+        CopyPartialReports(staging_directory / "backend",
+                           artifact_directory / "step-logs", run, fingerprint,
+                           &artifacts);
+        CopyPhysicalVerificationReports(staging_directory / "backend",
+                                        reports_directory / "openlane", run,
+                                        fingerprint, true, &artifacts);
+      }
+      const core::Status ignored =
+          run_store.Complete(run.get(), RunStatus::kFailed, 0, diagnostics,
+                             std::move(artifacts), {});
       (void)ignored;
     }
     Finish(std::move(status), {}, std::move(diagnostics));
@@ -830,6 +1010,12 @@ struct ManagedFlowRunService::Implementation final
     CopyPartialReports(staging_directory / "backend",
                        artifact_directory / "step-logs", run, fingerprint,
                        &artifacts);
+    CopyPhysicalVerificationReports(
+        staging_directory / "backend", reports_directory / "openlane", run,
+        fingerprint,
+        !artifacts_complete || process_result.exit_code != 0 ||
+            process_result.cancelled,
+        &artifacts);
     if (!final_artifact_status.Ok() && process_result.exit_code == 0 &&
         !process_result.cancelled) {
       result_status = final_artifact_status;
@@ -853,6 +1039,9 @@ struct ManagedFlowRunService::Implementation final
       summary << "{\"schema_version\":1,\"tool\":\"openlane2\""
               << ",\"tool_version\":\"" << EscapeJson(tool_version) << '"'
               << ",\"project_id\":\"" << EscapeJson(request.project.id)
+              << "\",\"library_id\":\""
+              << EscapeJson(request.project.library_id) << "\",\"cell_id\":\""
+              << EscapeJson(request.project.cell_id)
               << "\",\"project_revision\":" << request.project.revision
               << ",\"backend_id\":\""
               << EscapeJson(request.project.physical_implementation.backend_id)
@@ -886,6 +1075,19 @@ struct ManagedFlowRunService::Implementation final
       AppendOptionalNumber(&summary, "worst_hold_skew",
                            metrics.worst_hold_skew);
       AppendOptionalNumber(&summary, "wire_length", metrics.wire_length);
+      AppendOptionalNumber(&summary, "global_route_congestion",
+                           metrics.global_route_congestion);
+      AppendOptionalNumber(&summary, "detailed_route_congestion",
+                           metrics.detailed_route_congestion);
+      AppendOptionalNumber(&summary, "global_route_overflow",
+                           metrics.global_route_overflow);
+      AppendOptionalNumber(&summary, "detailed_route_overflow",
+                           metrics.detailed_route_overflow);
+      AppendOptionalNumber(&summary, "routing_violations",
+                           metrics.routing_violations);
+      AppendOptionalNumber(&summary, "runtime_seconds",
+                           metrics.runtime_seconds);
+      AppendOptionalNumber(&summary, "peak_memory_mb", metrics.peak_memory_mb);
       AppendOptionalNumber(&summary, "antenna_violations",
                            metrics.antenna_violations);
       AppendOptionalNumber(&summary, "drc_violations", metrics.drc_violations);
@@ -946,7 +1148,7 @@ struct ManagedFlowRunService::Implementation final
   ManagedFlowRunRequest request;
   ManagedFlowRunEventSink sink;
   ManagedFlowRunState state = ManagedFlowRunState::kIdle;
-  std::unique_ptr<runtime::ExecutionHandle> handle;
+  std::shared_ptr<runtime::ExecutionHandle> handle;
   std::vector<std::shared_ptr<runtime::ExecutionHandle>>
       deferred_handle_cleanup;
   std::unique_ptr<runtime::CpuTokenLease> cpu_lease;
@@ -960,6 +1162,8 @@ struct ManagedFlowRunService::Implementation final
   std::string lineage_id;
   std::string last_step;
   std::vector<std::string> step_ids;
+  std::unique_ptr<OrfsManagedFlowRunService> orfs_service;
+  bool delegated_orfs = false;
   bool active = false;
   bool cancellation_requested = false;
   bool terminal_delivered = false;
@@ -977,13 +1181,46 @@ core::Status ManagedFlowRunService::Start(ManagedFlowRunRequest request,
                                           ManagedFlowRunEventSink sink) {
   const auto implementation = implementation_;
   if (implementation == nullptr || implementation->provider == nullptr ||
-      request.library_directory.empty() || request.cell_directory.empty() ||
-      request.generation == 0) {
+      !sink || request.library_directory.empty() ||
+      request.cell_directory.empty() || request.generation == 0) {
     return {core::ErrorCode::kInvalidArgument,
             "Managed flow run identity is incomplete", 0};
   }
   core::Status validation = core::ValidateProject(request.project);
   if (!validation.Ok()) return validation;
+  const std::string backend_id =
+      request.project.physical_implementation.backend_id;
+  if (!adapters::CreateManagedFlowAdapter(backend_id)) {
+    return {core::ErrorCode::kInvalidArgument,
+            "The physical implementation backend is not registered", 0};
+  }
+  if (backend_id == "orfs") {
+    {
+      std::scoped_lock lock(implementation->mutex);
+      if (implementation->shutdown) {
+        return {core::ErrorCode::kCancelled,
+                "Managed flow service is shutting down", 0};
+      }
+      if (implementation->active ||
+          (implementation->orfs_service != nullptr &&
+           implementation->orfs_service->IsActive())) {
+        return {core::ErrorCode::kConflict, "A managed flow is already active",
+                0};
+      }
+      implementation->delegated_orfs = true;
+    }
+    const core::Status started = implementation->orfs_service->Start(
+        std::move(request), std::move(sink));
+    if (!started.Ok()) {
+      std::scoped_lock lock(implementation->mutex);
+      implementation->delegated_orfs = false;
+    }
+    return started;
+  }
+  if (implementation->orfs_service != nullptr &&
+      implementation->orfs_service->IsActive()) {
+    return {core::ErrorCode::kConflict, "A managed flow is already active", 0};
+  }
   {
     std::scoped_lock lock(implementation->mutex);
     if (implementation->shutdown) {
@@ -1012,6 +1249,7 @@ core::Status ManagedFlowRunService::Start(ManagedFlowRunRequest request,
     implementation->cancellation_requested = false;
     implementation->terminal_delivered = false;
     implementation->operation_stop_source = std::stop_source{};
+    implementation->delegated_orfs = false;
   }
   implementation->EmitState(ManagedFlowRunState::kProbing);
   implementation->StartProbe();
@@ -1021,14 +1259,27 @@ core::Status ManagedFlowRunService::Start(ManagedFlowRunRequest request,
 void ManagedFlowRunService::Cancel() noexcept {
   const auto implementation = implementation_;
   if (!implementation) return;
-  runtime::ExecutionHandle* handle = nullptr;
+  bool delegated_orfs = false;
+  {
+    std::scoped_lock lock(implementation->mutex);
+    delegated_orfs = implementation->delegated_orfs;
+  }
+  if (delegated_orfs) {
+    if (implementation->orfs_service) implementation->orfs_service->Cancel();
+    return;
+  }
+  std::shared_ptr<runtime::ExecutionHandle> handle;
   {
     std::scoped_lock lock(implementation->mutex);
     if (!implementation->active || implementation->terminal_delivered) return;
     implementation->cancellation_requested = true;
     implementation->state = ManagedFlowRunState::kCancelling;
     implementation->operation_stop_source.request_stop();
-    handle = implementation->handle.get();
+    // Keep the handle alive after releasing the service mutex.  Completion
+    // may concurrently replace and retire the active handle; retaining a
+    // shared ownership here prevents Cancel from dereferencing a destroyed
+    // process object in that race.
+    handle = implementation->handle;
   }
   if (handle) handle->Cancel();
   implementation->EmitState(ManagedFlowRunState::kCancelling);
@@ -1037,7 +1288,7 @@ void ManagedFlowRunService::Cancel() noexcept {
 void ManagedFlowRunService::Shutdown() noexcept {
   const auto implementation = implementation_;
   if (!implementation) return;
-  std::unique_ptr<runtime::ExecutionHandle> active_handle;
+  std::shared_ptr<runtime::ExecutionHandle> active_handle;
   std::vector<std::shared_ptr<runtime::ExecutionHandle>> deferred_handles;
   {
     std::scoped_lock lock(implementation->mutex);
@@ -1048,6 +1299,7 @@ void ManagedFlowRunService::Shutdown() noexcept {
     active_handle = std::move(implementation->handle);
     deferred_handles.swap(implementation->deferred_handle_cleanup);
   }
+  if (implementation->orfs_service) implementation->orfs_service->Shutdown();
   if (active_handle) active_handle->Cancel();
   implementation->scheduler.RequestStop();
   active_handle.reset();
@@ -1058,15 +1310,27 @@ void ManagedFlowRunService::Shutdown() noexcept {
 ManagedFlowRunState ManagedFlowRunService::State() const {
   const auto implementation = implementation_;
   if (!implementation) return ManagedFlowRunState::kIdle;
-  std::scoped_lock lock(implementation->mutex);
-  return implementation->state;
+  bool delegated_orfs = false;
+  {
+    std::scoped_lock lock(implementation->mutex);
+    delegated_orfs = implementation->delegated_orfs;
+    if (!delegated_orfs) return implementation->state;
+  }
+  return implementation->orfs_service ? implementation->orfs_service->State()
+                                      : ManagedFlowRunState::kIdle;
 }
 
 bool ManagedFlowRunService::IsActive() const {
   const auto implementation = implementation_;
   if (!implementation) return false;
-  std::scoped_lock lock(implementation->mutex);
-  return implementation->active;
+  bool delegated_orfs = false;
+  {
+    std::scoped_lock lock(implementation->mutex);
+    delegated_orfs = implementation->delegated_orfs;
+    if (!delegated_orfs) return implementation->active;
+  }
+  return implementation->orfs_service != nullptr &&
+         implementation->orfs_service->IsActive();
 }
 
 }  // namespace designpp::application

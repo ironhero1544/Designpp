@@ -19,6 +19,7 @@ struct LayoutViewerRequest {
   core::ToolchainProfile profile;
   std::filesystem::path gds_path;
   std::uint64_t generation = 0;
+  std::filesystem::path marker_database_path;
 };
 
 struct LayoutViewerEvent {

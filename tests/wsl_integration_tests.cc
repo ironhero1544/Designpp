@@ -7,16 +7,19 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "designpp/adapters/cocotb_runner_adapter.h"
 #include "designpp/adapters/openlane2_adapter.h"
 #include "designpp/adapters/opensta_adapter.h"
+#include "designpp/adapters/orfs_adapter.h"
 #include "designpp/adapters/simulation_result_parser.h"
 #include "designpp/adapters/verilator_simulation_adapter.h"
 #include "designpp/adapters/yosys_adapter.h"
@@ -120,6 +123,62 @@ adapters::OpenLaneRequest WriteOpenLaneFixture(
   request.staging_workspace = WideToUtf8(staging_wsl.Value());
   request.cpu_threads = 2;
   return request;
+}
+
+adapters::OrfsRequest WriteOrfsFixture(const std::filesystem::path& directory,
+                                       std::string platform,
+                                       std::string tool_mode) {
+  const std::filesystem::path staging =
+      directory /
+      (L"ORFS 한글 staging " + std::wstring(platform.begin(), platform.end()));
+  const std::filesystem::path backend = directory / L"backend";
+  std::filesystem::create_directories(staging / L"src");
+  std::filesystem::create_directories(staging / L"constraints");
+  std::filesystem::create_directories(backend);
+  std::ofstream(staging / L"src" / L"source_0.sv")
+      << "module tiny_counter(input logic clk, input logic rst_n, "
+         "output logic [3:0] count);\n"
+      << "always_ff @(posedge clk or negedge rst_n) begin\n"
+      << "  if (!rst_n) count <= '0; else count <= count + 1'b1;\n"
+      << "end\nendmodule\n";
+  std::ofstream(staging / L"constraints" / L"constraints.sdc")
+      << "set_cmd_units -time ns\n"
+      << "create_clock -name clk -period 20.0 [get_ports clk]\n";
+  runtime::PathMapper mapper;
+  auto staging_wsl = mapper.WindowsToWsl(staging);
+  auto backend_wsl = mapper.WindowsToWsl(backend);
+  Assert::IsTrue(staging_wsl.Ok());
+  Assert::IsTrue(backend_wsl.Ok());
+  adapters::OrfsRequest request;
+  request.profile.orfs_root = "~/.designpp/toolchains/orfs";
+  request.configuration.backend_id = "orfs";
+  request.configuration.orfs.platform = std::move(platform);
+  request.configuration.orfs.flow_variant = "base";
+  request.configuration.clock_ports = {"clk"};
+  request.configuration.clock_period_ns = "20.0";
+  request.configuration.core_utilization_percent = 40;
+  request.configuration.die_area = {"0", "0", "100", "100"};
+  request.configuration.core_area = {"10", "10", "90", "90"};
+  request.top_module = "tiny_counter";
+  request.sources.push_back({"tiny_counter.sv", "source_0.sv"});
+  request.sdc_path = "constraints.sdc";
+  request.effective_clock_period_ns = "20.0";
+  request.backend_workspace = WideToUtf8(backend_wsl.Value());
+  request.staging_workspace = WideToUtf8(staging_wsl.Value());
+  request.cpu_threads = 2;
+  request.target_stage = core::StageId::kFloorplan;
+  request.tool_mode = std::move(tool_mode);
+  return request;
+}
+
+void WriteOrfsPlanFiles(const std::filesystem::path& staging,
+                        const adapters::OrfsPlan& plan) {
+  std::ofstream(staging / L"config.mk", std::ios::binary)
+      << plan.config_makefile;
+  std::ofstream(staging / L"designpp-openroad-wrapper.sh", std::ios::binary)
+      << plan.openroad_wrapper;
+  std::ofstream(staging / L"designpp-openroad-init.tcl", std::ios::binary)
+      << plan.openroad_init;
 }
 
 void WriteFixture(const std::filesystem::path& directory) {
@@ -841,10 +900,355 @@ TEST_METHOD(OpenStaReportsIntentionalHoldViolation) {
   Assert::IsTrue(metrics.Value().hold.violation_count > 0);
 }
 
+TEST_METHOD(OrfsCommandUnitsKeepTwentyNanosecondClockAcrossLibertyUnits) {
+  adapters::OrfsAdapter adapter;
+  core::ToolchainProfile profile;
+  profile.orfs_root = "~/.designpp/toolchains/orfs";
+  const runtime::ProcessResult probe =
+      Run(adapter.BuildProbeCommand(profile), std::chrono::minutes(2));
+  if (probe.exit_code != 0) Logger::WriteMessage(probe.output.c_str());
+  Assert::IsTrue(probe.started);
+  Assert::AreEqual(static_cast<std::uint32_t>(0), probe.exit_code);
+
+  ScopedDirectory directory;
+  const std::filesystem::path verilog = directory.path() / L"clock_top.v";
+  std::ofstream(verilog, std::ios::binary)
+      << "module clock_top(input clk, input d, output q);\n"
+         "  assign q = d;\n"
+         "endmodule\n";
+  runtime::PathMapper mapper;
+  const auto verilog_wsl = mapper.WindowsToWsl(verilog);
+  Assert::IsTrue(verilog_wsl.Ok());
+  const std::array<std::string_view, 2> liberty_files = {
+      ".designpp/toolchains/orfs/flow/platforms/asap7/lib/NLDM/"
+      "asap7sc7p5t_SEQ_RVT_FF_nldm_220123.lib",
+      ".designpp/toolchains/orfs/flow/platforms/nangate45/lib/"
+      "NangateOpenCellLibrary_typical.lib"};
+  const std::array<std::string_view, 2> technology_lefs = {
+      ".designpp/toolchains/orfs/flow/platforms/asap7/lef/"
+      "asap7_tech_1x_201209.lef",
+      ".designpp/toolchains/orfs/flow/platforms/nangate45/lef/"
+      "NangateOpenCellLibrary.tech.lef"};
+  const std::array<std::string_view, 2> cell_lefs = {
+      ".designpp/toolchains/orfs/flow/platforms/asap7/lef/"
+      "asap7sc7p5t_28_R_1x_220121a.lef",
+      ".designpp/toolchains/orfs/flow/platforms/nangate45/lef/"
+      "NangateOpenCellLibrary.macro.lef"};
+  for (std::size_t index = 0; index < liberty_files.size(); ++index) {
+    const std::filesystem::path unit_home =
+        directory.path() / (L"openroad_home_" + std::to_wstring(index));
+    std::filesystem::create_directories(unit_home);
+    const std::filesystem::path init = unit_home / L"designpp-init.tcl";
+    std::ofstream(init, std::ios::binary)
+        << "rename read_sdc designpp_original_read_sdc\n"
+        << "proc read_sdc {args} {\n"
+        << "  set_cmd_units -time ns\n"
+        << "  uplevel 1 [list designpp_original_read_sdc {*}$args]\n"
+        << "}\n";
+    const std::filesystem::path writer =
+        directory.path() /
+        (L"clock_writer_" + std::to_wstring(index) + L".tcl");
+    const std::filesystem::path reader =
+        directory.path() /
+        (L"clock_reader_" + std::to_wstring(index) + L".tcl");
+    const std::filesystem::path serialized =
+        directory.path() / (L"serialized_" + std::to_wstring(index) + L".sdc");
+    const std::filesystem::path input_sdc =
+        directory.path() / (L"input_" + std::to_wstring(index) + L".sdc");
+    const std::filesystem::path writer_entry =
+        directory.path() /
+        (L"clock_writer_entry_" + std::to_wstring(index) + L".tcl");
+    const std::filesystem::path reader_entry =
+        directory.path() /
+        (L"clock_reader_entry_" + std::to_wstring(index) + L".tcl");
+    const auto writer_wsl = mapper.WindowsToWsl(writer);
+    const auto reader_wsl = mapper.WindowsToWsl(reader);
+    const auto serialized_wsl = mapper.WindowsToWsl(serialized);
+    const auto input_sdc_wsl = mapper.WindowsToWsl(input_sdc);
+    const auto init_wsl = mapper.WindowsToWsl(init);
+    const auto writer_entry_wsl = mapper.WindowsToWsl(writer_entry);
+    const auto reader_entry_wsl = mapper.WindowsToWsl(reader_entry);
+    Assert::IsTrue(writer_wsl.Ok());
+    Assert::IsTrue(reader_wsl.Ok());
+    Assert::IsTrue(serialized_wsl.Ok());
+    Assert::IsTrue(input_sdc_wsl.Ok());
+    Assert::IsTrue(init_wsl.Ok());
+    Assert::IsTrue(writer_entry_wsl.Ok());
+    Assert::IsTrue(reader_entry_wsl.Ok());
+    const auto write_design_setup = [&](std::ostream& output) -> std::ostream& {
+      return output
+             << "read_lef [file normalize \"$::env(DESIGNPP_ORIGINAL_HOME)/"
+             << technology_lefs[index] << "\"]\n"
+             << "read_lef [file normalize \"$::env(DESIGNPP_ORIGINAL_HOME)/"
+             << cell_lefs[index] << "\"]\n"
+             << "set liberty [file normalize \"$::env(DESIGNPP_ORIGINAL_HOME)/"
+             << liberty_files[index] << "\"]\n"
+             << "read_liberty $liberty\n"
+             << "read_verilog {" << WideToUtf8(verilog_wsl.Value()) << "}\n"
+             << "link_design clock_top\n";
+    };
+    {
+      std::ofstream(input_sdc, std::ios::binary)
+          << "create_clock -name clk -period 20.0 [get_ports clk]\n"
+          << "set_clock_uncertainty -setup 0.5 [get_clocks clk]\n";
+      std::ofstream output(writer, std::ios::binary);
+      write_design_setup(output)
+          << "read_sdc {" << WideToUtf8(input_sdc_wsl.Value()) << "}\n"
+          << "write_sdc -no_timestamp {" << WideToUtf8(serialized_wsl.Value())
+          << "}\n"
+          << "exit\n";
+    }
+    {
+      std::ofstream output(reader, std::ios::binary);
+      write_design_setup(output)
+          << "read_sdc {" << WideToUtf8(serialized_wsl.Value()) << "}\n"
+          << "set_cmd_units -time ns\n"
+          << "puts \"DESIGNPP_CLOCK_PERIOD=[get_property [get_clocks clk] "
+             "period]\"\n"
+          << "exit\n";
+    }
+    std::ofstream(writer_entry, std::ios::binary)
+        << "source {" << WideToUtf8(init_wsl.Value()) << "}\nsource {"
+        << WideToUtf8(writer_wsl.Value()) << "}\n";
+    std::ofstream(reader_entry, std::ios::binary)
+        << "source {" << WideToUtf8(init_wsl.Value()) << "}\nsource {"
+        << WideToUtf8(reader_wsl.Value()) << "}\n";
+    runtime::WslCommand command;
+    command.program = L"/bin/bash";
+    command.arguments = {
+        L"-lc",
+        L"root=\"$1\"; script=\"$2\"; "
+        L"original_home=\"$HOME\"; case \"$root\" in '~/'*) "
+        L"root=\"$original_home/${root#\\~/}\";; esac; exec nix "
+        L"--extra-experimental-features 'nix-command flakes' develop "
+        L"\"$root\" --offline --no-write-lock-file --override-input yosys "
+        L"\"git+file://$root/tools/yosys?submodules=1\" --override-input "
+        L"openroad \"git+file://$root/tools/OpenROAD?submodules=1\" "
+        L"--override-input eqy-src \"git+file://$root/tools/eqy\" "
+        L"--max-jobs 0 --builders '' --option fallback false --command "
+        L"/usr/bin/env DESIGNPP_ORIGINAL_HOME=\"$original_home\" "
+        L"openroad -exit "
+        L"\"$script\"",
+        L"designpp-orfs-clock-units", L"~/.designpp/toolchains/orfs",
+        writer_entry_wsl.Value()};
+    const runtime::ProcessResult write_result =
+        Run(command, std::chrono::minutes(2));
+    if (write_result.exit_code != 0) {
+      Logger::WriteMessage(write_result.output.c_str());
+    }
+    Assert::IsTrue(write_result.started);
+    Assert::AreEqual(static_cast<std::uint32_t>(0), write_result.exit_code);
+    command.arguments[4] = reader_entry_wsl.Value();
+    const runtime::ProcessResult result = Run(command, std::chrono::minutes(2));
+    if (result.exit_code != 0) Logger::WriteMessage(result.output.c_str());
+    Assert::IsTrue(result.started);
+    Assert::AreEqual(static_cast<std::uint32_t>(0), result.exit_code);
+    Assert::IsTrue(result.output.find("DESIGNPP_CLOCK_PERIOD=20") !=
+                   std::string::npos);
+  }
+}
+
+TEST_METHOD(OrfsAsap7SynthesisHandlesCompressedMultiLiberty) {
+  adapters::OrfsAdapter adapter;
+  core::ToolchainProfile profile;
+  profile.orfs_root = "~/.designpp/toolchains/orfs";
+  const runtime::ProcessResult probe =
+      Run(adapter.BuildProbeCommand(profile), std::chrono::minutes(2));
+  if (probe.exit_code != 0) Logger::WriteMessage(probe.output.c_str());
+  Assert::IsTrue(probe.started);
+  Assert::AreEqual(static_cast<std::uint32_t>(0), probe.exit_code);
+  constexpr std::string_view kMarker = "DESIGNPP_ORFS_TOOL_MODE=";
+  const std::size_t marker = probe.output.find(kMarker);
+  Assert::IsTrue(marker != std::string::npos);
+  const std::size_t begin = marker + kMarker.size();
+  const std::size_t end = probe.output.find_first_of("\r\n", begin);
+  ScopedDirectory directory;
+  adapters::OrfsRequest request = WriteOrfsFixture(
+      directory.path(), "asap7", probe.output.substr(begin, end - begin));
+  // Mirror the service boundary: user paths may contain Unicode, but EDA
+  // tools receive an ASCII-safe staging copy rather than the original path.
+  const std::filesystem::path staging = directory.path() / L"staging";
+  std::filesystem::copy(directory.path() / L"ORFS 한글 staging asap7", staging,
+                        std::filesystem::copy_options::recursive);
+  runtime::PathMapper mapper;
+  const auto staging_wsl = mapper.WindowsToWsl(staging);
+  Assert::IsTrue(staging_wsl.Ok());
+  request.staging_workspace = WideToUtf8(staging_wsl.Value());
+  request.backend_workspace =
+      ".designpp/diagnostics/asap7-" + directory.path().filename().string();
+  request.target_stage = core::StageId::kSynthesis;
+  const auto plan = adapter.BuildPlan(request);
+  Assert::IsTrue(plan.Ok());
+  WriteOrfsPlanFiles(staging, plan.Value());
+  const runtime::ProcessResult flow =
+      Run(plan.Value().execute, std::chrono::minutes(3));
+  if (flow.exit_code != 0) Logger::WriteMessage(flow.output.c_str());
+  Assert::IsTrue(flow.started);
+  Assert::AreEqual(static_cast<std::uint32_t>(0), flow.exit_code);
+  runtime::WslCommand artifacts;
+  artifacts.program = L"/bin/bash";
+  artifacts.arguments = {
+      L"-lc",
+      L"test -s \"$HOME/$1/results/asap7/tiny_counter/base/1_2_yosys.v\" && "
+      L"test -s \"$HOME/$1/results/asap7/tiny_counter/base/1_synth.odb\" && "
+      L"grep -R -q 'DESIGNPP_OPENROAD_SDC_TIME_UNIT=ns' "
+      L"\"$HOME/$1/logs\"",
+      L"designpp-asap7-artifacts",
+      std::wstring(request.backend_workspace.begin(),
+                   request.backend_workspace.end())};
+  Assert::AreEqual(static_cast<std::uint32_t>(0), Run(artifacts).exit_code);
+  Assert::IsTrue(flow.output.find("Re-integrating ABC results") !=
+                 std::string::npos);
+  Assert::IsTrue(flow.output.find("asap7sc7p5t_AO_RVT_FF_nldm_211120.lib.gz") !=
+                 std::string::npos);
+}
+
+TEST_METHOD(OrfsReadyPlatformsReachFloorplanAndLoadCheckpointHeadless) {
+  adapters::OrfsAdapter adapter;
+  core::ToolchainProfile profile;
+  profile.orfs_root = "~/.designpp/toolchains/orfs";
+  const runtime::ProcessResult probe =
+      Run(adapter.BuildProbeCommand(profile), std::chrono::minutes(2));
+  if (!probe.started || probe.exit_code != 0 ||
+      probe.output.find("DESIGNPP_ORFS_READY") == std::string::npos) {
+    Logger::WriteMessage(
+        "ORFS checkout or its OpenROAD executable is unavailable; skipping "
+        "the ORFS physical integration fixture.\n");
+    return;
+  }
+  const runtime::ProcessResult discovery =
+      Run(adapter.BuildPlatformDiscoveryCommand(profile));
+  Assert::IsTrue(discovery.started);
+  Assert::AreEqual(static_cast<std::uint32_t>(0), discovery.exit_code);
+  const auto candidates = adapter.ParsePlatformDiscovery(discovery.output);
+  Assert::IsTrue(candidates.Ok());
+  ScopedDirectory root;
+  constexpr std::string_view kToolModeMarker = "DESIGNPP_ORFS_TOOL_MODE=";
+  const std::size_t tool_mode_begin = probe.output.find(kToolModeMarker);
+  Assert::IsTrue(tool_mode_begin != std::string::npos);
+  const std::size_t tool_mode_value = tool_mode_begin + kToolModeMarker.size();
+  const std::size_t tool_mode_end =
+      probe.output.find_first_of("\r\n", tool_mode_value);
+  const std::string tool_mode =
+      probe.output.substr(tool_mode_value, tool_mode_end - tool_mode_value);
+  std::size_t exercised = 0;
+  for (const char* platform : {"sky130hd", "nangate45"}) {
+    const bool runnable = std::any_of(
+        candidates.Value().begin(), candidates.Value().end(),
+        [platform](const adapters::OrfsPlatformCandidate& candidate) {
+          return candidate.name == platform && candidate.runnable;
+        });
+    if (!runnable) continue;
+    const std::filesystem::path directory = root.path() / platform;
+    std::filesystem::create_directories(directory);
+    adapters::OrfsRequest request =
+        WriteOrfsFixture(directory, platform, tool_mode);
+    const auto staging = directory / L"staging";
+    std::filesystem::copy(
+        directory / (L"ORFS 한글 staging " +
+                     std::wstring(platform, platform + std::strlen(platform))),
+        staging, std::filesystem::copy_options::recursive);
+    runtime::PathMapper mapper;
+    const auto staged_path = mapper.WindowsToWsl(staging);
+    Assert::IsTrue(staged_path.Ok());
+    request.staging_workspace = WideToUtf8(staged_path.Value());
+    request.backend_workspace = ".designpp/diagnostics/floorplan-" +
+                                root.path().filename().string() + "-" +
+                                platform;
+    auto plan = adapter.BuildPlan(request);
+    if (!plan.Ok()) Logger::WriteMessage(plan.GetStatus().message.c_str());
+    Assert::IsTrue(plan.Ok());
+    WriteOrfsPlanFiles(staging, plan.Value());
+    const runtime::ProcessResult validation =
+        Run(plan.Value().validate, std::chrono::minutes(2));
+    if (validation.exit_code != 0) {
+      Logger::WriteMessage(validation.output.c_str());
+    }
+    Assert::IsTrue(validation.started);
+    Assert::AreEqual(static_cast<std::uint32_t>(0), validation.exit_code);
+    const runtime::ProcessResult flow =
+        Run(plan.Value().execute, std::chrono::minutes(20));
+    if (flow.exit_code != 0) Logger::WriteMessage(flow.output.c_str());
+    Assert::IsTrue(flow.started);
+    Assert::AreEqual(static_cast<std::uint32_t>(0), flow.exit_code);
+    const auto destination = mapper.WindowsToWsl(directory / L"backend");
+    Assert::IsTrue(destination.Ok());
+    runtime::WslCommand copy;
+    copy.program = L"/bin/bash";
+    copy.arguments = {L"-lc",
+                      L"grep -R -q 'DESIGNPP_OPENROAD_SDC_TIME_UNIT=ns' "
+                      L"\"$HOME/$1/logs\" && cp -R \"$HOME/$1\"/. \"$2\"/",
+                      L"designpp-fixture-export",
+                      std::wstring(request.backend_workspace.begin(),
+                                   request.backend_workspace.end()),
+                      destination.Value()};
+    Assert::AreEqual(std::uint32_t(0), Run(copy).exit_code);
+    const adapters::ManagedFlowArtifactSet artifacts =
+        adapter.DiscoverAvailableArtifacts(directory / L"backend");
+    Assert::IsTrue(
+        adapter.ValidateStageArtifacts(artifacts, core::StageId::kFloorplan)
+            .Ok());
+    Assert::IsFalse(artifacts.metrics_json.empty());
+    std::ifstream metrics_input(artifacts.metrics_json, std::ios::binary);
+    const std::string metrics((std::istreambuf_iterator<char>(metrics_input)),
+                              std::istreambuf_iterator<char>());
+    Assert::IsTrue(adapter.ParseMetrics(metrics).Ok());
+
+    const auto checkpoint = mapper.WindowsToWsl(artifacts.odb);
+    const std::filesystem::path script_path = directory / L"load_odb.tcl";
+    const auto script = mapper.WindowsToWsl(script_path);
+    Assert::IsTrue(checkpoint.Ok());
+    Assert::IsTrue(script.Ok());
+    std::ofstream(script_path, std::ios::binary)
+        << "read_db {" << WideToUtf8(checkpoint.Value()) << "}\n"
+        << "puts DESIGNPP_ORFS_ODB_LOADED\nexit\n";
+    runtime::WslCommand load;
+    load.program = L"/bin/bash";
+    load.arguments = {
+        L"-lc",
+        L"root=\"$1\"; case \"$root\" in '~/'*) "
+        L"root=\"$HOME/${root#\\~/}\";; esac; "
+        L"if [ -f \"$root/flake.nix\" ]; then "
+        L"exec nix --extra-experimental-features 'nix-command flakes' "
+        L"develop \"$root\" --no-write-lock-file --override-input yosys "
+        L"\"git+file://$root/tools/yosys?submodules=1\" "
+        L"--override-input openroad "
+        L"\"git+file://$root/tools/OpenROAD?submodules=1\" "
+        L"--command openroad -exit \"$2\"; fi; "
+        L"exe=\"${OPENROAD_EXE:-}\"; "
+        L"if [ -z \"$exe\" ]; then "
+        L"exe=\"$(command -v openroad 2>/dev/null || true)\"; fi; "
+        L"if [ -z \"$exe\" ]; then "
+        L"exe=\"$root/tools/install/OpenROAD/bin/openroad\"; fi; "
+        L"exec \"$exe\" -exit \"$2\"",
+        L"designpp-orfs-headless", L"~/.designpp/toolchains/orfs",
+        script.Value()};
+    const runtime::ProcessResult loaded = Run(load, std::chrono::minutes(2));
+    if (loaded.exit_code != 0) Logger::WriteMessage(loaded.output.c_str());
+    Assert::IsTrue(loaded.started);
+    Assert::AreEqual(static_cast<std::uint32_t>(0), loaded.exit_code);
+    Assert::IsTrue(loaded.output.find("DESIGNPP_ORFS_ODB_LOADED") !=
+                   std::string::npos);
+    ++exercised;
+  }
+  Assert::IsTrue(exercised > 0);
+}
+
 TEST_METHOD(OpenLaneClassicReachesFloorplanWithManagedConfig) {
   ScopedDirectory directory;
   adapters::OpenLane2Adapter adapter;
   adapters::OpenLaneRequest request = WriteOpenLaneFixture(directory.path());
+  request.configuration.io_placement.north.entries = {"clk"};
+  request.configuration.io_placement.south.entries = {"rst_n"};
+  request.configuration.io_placement.east.entries = {"count.*"};
+  auto pin_order = adapter.BuildPinOrderConfiguration(request.configuration);
+  Assert::IsTrue(pin_order.Ok());
+  const std::filesystem::path constraints =
+      directory.path() / L"한글 OpenLane staging" / L"constraints";
+  std::filesystem::create_directories(constraints);
+  std::ofstream(constraints / L"pin_order.cfg", std::ios::binary)
+      << pin_order.Value();
+  request.pin_order_cfg = "pin_order.cfg";
   auto plan = adapter.BuildPlan(request);
   Assert::IsTrue(plan.Ok());
   std::ofstream(directory.path() / L"한글 OpenLane staging" / L"config.json",

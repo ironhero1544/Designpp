@@ -69,6 +69,10 @@ class ProjectService final {
   [[nodiscard]] core::Result<ProjectDocument> OpenOrCreate(
       const LibraryRecord& library, std::string_view cell_id) const;
   [[nodiscard]] core::Status Save(ProjectDocument* document) const;
+  // Saves a project snapshot without mutating the in-memory document. This is
+  // used by asynchronous window saves to keep each cell's draft isolated.
+  [[nodiscard]] core::Result<core::Project> Save(ProjectDocument* document,
+                                                 core::Project project) const;
   [[nodiscard]] core::Status Refresh(ProjectDocument* document) const;
   [[nodiscard]] core::Result<std::vector<ResolvedSource>> ResolveSources(
       const LibraryRecord& library, std::string_view cell_id,

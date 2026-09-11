@@ -7,18 +7,24 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "designpp/adapters/orfs_adapter.h"
 #include "designpp/application/layout_viewer_service.h"
 #include "designpp/application/openlane_discovery_service.h"
+#include "designpp/application/openroad_viewer_service.h"
+#include "designpp/application/orfs_discovery_service.h"
 #include "designpp/application/physical_implementation_service.h"
+#include "designpp/application/physical_verification_service.h"
 #include "designpp/application/project_service.h"
 #include "designpp/core/toolchain_profile.h"
 #include "designpp/gui/dpi.h"
+#include "designpp/gui/layout_setup_controller.h"
 #include "designpp/gui/view_window.h"
 #include "designpp/runtime/execution_provider.h"
 #include "designpp/runtime/task_scheduler.h"
@@ -37,7 +43,8 @@ class LayoutWindowImplementation final : public ViewWindow {
                             const application::WorkspaceOpenRequest& request,
                             application::LibraryRecord library,
                             ViewWindowLogCallback central_log,
-                            ViewWindowLibraryChangedCallback library_changed);
+                            ViewWindowLibraryChangedCallback library_changed,
+                            LayoutJsonEditorCallback json_editor = {});
 
   [[nodiscard]] ViewWindowKind Kind() const noexcept override;
   [[nodiscard]] bool CanActivate(
@@ -65,17 +72,29 @@ class LayoutWindowImplementation final : public ViewWindow {
   void LayoutControls(int width, int height);
   void BeginLoad();
   void HandleEvents();
+  void ClearLoadedCellState();
   void PopulateConfiguration();
   void PopulateStandardCellLibraries();
   void EditSetup();
-  void SaveSetup();
-  void SaveAndStart(bool resume);
-  void StartPreparedRun(bool resume);
+  void SaveSetup(core::PhysicalImplementationConfiguration configuration);
+  void SaveAndStart(bool resume,
+                    core::StageId target_stage = core::StageId::kFinalOutputs,
+                    bool rebuild_from_stage = false, bool full_flow = false);
+  void StartPreparedRun(
+      bool resume, core::StageId target_stage = core::StageId::kFinalOutputs,
+      bool rebuild_from_stage = false, bool full_flow = false);
+  void ShowStages();
   void ApplyState(application::ManagedFlowRunState state);
   void AppendOutput(std::wstring_view text);
   void ShowReports();
   void ShowArtifacts();
   void OpenLayout();
+  void SelectPage(int index);
+  void PopulateVerification();
+  void StartVerification(adapters::VerificationCheck check);
+  void ApplyVerificationEvent(
+      const application::PhysicalVerificationEvent& event);
+  void OpenVerificationResult(int index);
   void MergeCompletedRun(
       const std::shared_ptr<application::RunRecord>& completed_run);
   void PopulateRuns();
@@ -88,6 +107,7 @@ class LayoutWindowImplementation final : public ViewWindow {
   HWND run_button_ = nullptr;
   HWND cancel_button_ = nullptr;
   HWND resume_button_ = nullptr;
+  HWND stages_button_ = nullptr;
   HWND config_button_ = nullptr;
   HWND reports_button_ = nullptr;
   HWND artifacts_button_ = nullptr;
@@ -103,7 +123,15 @@ class LayoutWindowImplementation final : public ViewWindow {
   HWND advanced_edit_ = nullptr;
   HWND stages_list_ = nullptr;
   HWND summary_ = nullptr;
+  HWND page_tabs_ = nullptr;
   HWND runs_list_ = nullptr;
+  HWND verification_source_ = nullptr;
+  HWND verification_list_ = nullptr;
+  HWND verification_detail_ = nullptr;
+  HWND drc_button_ = nullptr;
+  HWND lvs_button_ = nullptr;
+  HWND verify_all_button_ = nullptr;
+  HWND verification_cancel_button_ = nullptr;
   HWND output_ = nullptr;
   HWND status_ = nullptr;
   UINT dpi_ = kDefaultDpi;
@@ -111,30 +139,48 @@ class LayoutWindowImplementation final : public ViewWindow {
 
   application::WorkspaceOpenRequest request_;
   core::ViewKind view_kind_ = core::ViewKind::kLayout;
+  std::string cell_name_;
   application::LibraryRecord library_;
   std::shared_ptr<application::ProjectDocument> document_;
   std::vector<application::ResolvedSource> sources_;
   std::vector<const application::ResolvedSource*> sdc_candidates_;
   std::vector<application::OpenLanePdkCandidate> pdk_candidates_;
+  std::vector<adapters::OrfsPlatformCandidate> orfs_platform_candidates_;
   core::ToolchainProfile profile_;
+  core::ToolchainSettings toolchain_settings_;
+  std::vector<core::VerificationRecipe> verification_recipes_;
   std::vector<application::RunRecord> runs_;
+  std::vector<application::RunRecord> verification_runs_;
   std::vector<adapters::ManagedFlowMetrics> run_metrics_;
   std::vector<std::optional<application::ManagedFlowResumeRequest>>
       resume_candidates_;
   std::shared_ptr<application::RunRecord> active_run_;
   std::optional<application::ManagedFlowResumeRequest> selected_resume_;
+  core::StageId selected_stage_ = core::StageId::kFinalOutputs;
   adapters::ManagedFlowMetrics metrics_;
   runtime::WslExecutionProvider execution_provider_;
   application::PhysicalImplementationService flow_service_{
       &execution_provider_};
   application::LayoutViewerService viewer_service_{&execution_provider_};
+  application::PhysicalVerificationService verification_service_{
+      &execution_provider_};
+  application::OpenRoadViewerService openroad_viewer_service_{
+      &execution_provider_};
   application::OpenLaneDiscoveryService discovery_service_{
+      &execution_provider_};
+  application::OrfsDiscoveryService orfs_discovery_service_{
       &execution_provider_};
   runtime::TaskScheduler scheduler_{1};
   std::shared_ptr<EventChannel> event_channel_;
   ViewWindowLogCallback central_log_;
   ViewWindowLibraryChangedCallback library_changed_;
+  LayoutJsonEditorCallback json_editor_;
+  std::string flow_output_utf8_remainder_;
   std::uint64_t generation_ = 1;
+  bool save_in_progress_ = false;
+  bool run_lvs_after_drc_ = false;
+  int selected_page_ = 0;
+  LayoutSetupController setup_;
 };
 
 }  // namespace designpp::gui

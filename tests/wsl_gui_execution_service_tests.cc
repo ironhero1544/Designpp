@@ -5,6 +5,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "designpp/application/wsl_gui_execution_service.h"
@@ -15,10 +17,12 @@ using Microsoft::VisualStudio::CppUnitTestFramework::Assert;
 namespace designpp::tests {
 namespace {
 
-runtime::ProcessResult ProcessResult(std::uint32_t exit_code = 0) {
+runtime::ProcessResult ProcessResult(std::uint32_t exit_code = 0,
+                                     std::string output = "tmpfs\n") {
   runtime::ProcessResult result;
   result.started = true;
   result.exit_code = exit_code;
+  result.output = std::move(output);
   return result;
 }
 
@@ -80,22 +84,66 @@ Assert::IsTrue(service
                    .Ok());
 
 Assert::IsTrue(provider.WaitForStarts(1));
-Assert::AreEqual(std::wstring(L"/usr/bin/touch"), provider.Command(0).program);
-Assert::IsTrue(provider.Command(0).arguments[0].starts_with(
-    L"/mnt/shared_memory/.designpp-wslg-probe-"));
+Assert::AreEqual(std::wstring(L"/usr/bin/stat"), provider.Command(0).program);
+Assert::IsTrue(provider.Command(0).arguments ==
+               std::vector<std::wstring>{L"-f", L"-c", L"%T",
+                                         L"/mnt/shared_memory"});
 provider.Complete(0, ProcessResult());
 Assert::IsTrue(provider.WaitForStarts(2));
-Assert::AreEqual(std::wstring(L"/usr/bin/rm"), provider.Command(1).program);
+Assert::AreEqual(std::wstring(L"/usr/bin/touch"), provider.Command(1).program);
 provider.Complete(1, ProcessResult());
 Assert::IsTrue(provider.WaitForStarts(3));
-Assert::AreEqual(std::wstring(L"klayout"), provider.Command(2).program);
-provider.Complete(2, ProcessResult(), 2);
+Assert::AreEqual(std::wstring(L"/usr/bin/rm"), provider.Command(2).program);
+provider.Complete(2, ProcessResult());
+Assert::IsTrue(provider.WaitForStarts(4));
+Assert::AreEqual(std::wstring(L"klayout"), provider.Command(3).program);
+provider.Complete(3, ProcessResult(), 2);
 
 Assert::IsTrue(collector.Wait());
 Assert::AreEqual(static_cast<std::size_t>(1), collector.Count());
 Assert::IsTrue(collector.Result().status.Ok());
 Assert::IsFalse(collector.Result().repair_attempted);
 }  // namespace designpp::tests
+
+TEST_METHOD(WritableNonTmpfsDirectoryIsRepairedBeforeViewerStarts) {
+  ControlledExecutionProvider provider;
+  application::WslGuiExecutionService service(&provider);
+  ResultCollector collector;
+  Assert::IsTrue(service
+                     .Start(
+                         ViewerCommand(), [](std::string) {},
+                         [&collector](auto result) {
+                           collector.Complete(std::move(result));
+                         })
+                     .Ok());
+
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, ProcessResult(0, "ext2\n"));
+  Assert::IsTrue(provider.WaitForStarts(2));
+  Assert::AreEqual(std::wstring(L"/usr/bin/mkdir"),
+                   provider.Command(1).program);
+  provider.Complete(1, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(3));
+  provider.Complete(2, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(4));
+  Assert::AreEqual(std::wstring(L"/usr/bin/mount"),
+                   provider.Command(3).program);
+  provider.Complete(3, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(5));
+  Assert::AreEqual(std::wstring(L"/usr/bin/touch"),
+                   provider.Command(4).program);
+  provider.Complete(4, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(6));
+  Assert::AreEqual(std::wstring(L"/usr/bin/rm"), provider.Command(5).program);
+  provider.Complete(5, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(7));
+  Assert::AreEqual(std::wstring(L"klayout"), provider.Command(6).program);
+  provider.Complete(6, ProcessResult());
+
+  Assert::IsTrue(collector.Wait());
+  Assert::IsTrue(collector.Result().status.Ok());
+  Assert::IsTrue(collector.Result().repair_attempted);
+}
 
 TEST_METHOD(BrokenTransportIsRepairedBeforeViewerStarts) {
   ControlledExecutionProvider provider;
@@ -119,23 +167,62 @@ TEST_METHOD(BrokenTransportIsRepairedBeforeViewerStarts) {
   provider.Complete(1, ProcessResult());
 
   Assert::IsTrue(provider.WaitForStarts(3));
-  const runtime::WslCommand mount = provider.Command(2);
-  Assert::AreEqual(std::wstring(L"/usr/bin/mount"), mount.program);
-  Assert::AreEqual(std::wstring(L"root"), *mount.user);
-  Assert::IsTrue(mount.arguments ==
-                 std::vector<std::wstring>{L"-t", L"tmpfs", L"-o", L"mode=1777",
-                                           L"tmpfs", L"/mnt/shared_memory"});
+  const runtime::WslCommand chmod = provider.Command(2);
+  Assert::AreEqual(std::wstring(L"/usr/bin/chmod"), chmod.program);
+  Assert::AreEqual(std::wstring(L"root"), *chmod.user);
+  Assert::IsTrue(chmod.arguments ==
+                 std::vector<std::wstring>{L"1777", L"/mnt/shared_memory"});
   provider.Complete(2, ProcessResult());
 
   Assert::IsTrue(provider.WaitForStarts(4));
-  Assert::AreEqual(std::wstring(L"/usr/bin/touch"),
+  Assert::AreEqual(std::wstring(L"/usr/bin/mount"),
                    provider.Command(3).program);
   provider.Complete(3, ProcessResult());
   Assert::IsTrue(provider.WaitForStarts(5));
   provider.Complete(4, ProcessResult());
   Assert::IsTrue(provider.WaitForStarts(6));
-  Assert::AreEqual(std::wstring(L"klayout"), provider.Command(5).program);
   provider.Complete(5, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(7));
+  Assert::AreEqual(std::wstring(L"klayout"), provider.Command(6).program);
+  provider.Complete(6, ProcessResult());
+
+  Assert::IsTrue(collector.Wait());
+  Assert::IsTrue(collector.Result().status.Ok());
+  Assert::IsTrue(collector.Result().repair_attempted);
+}
+
+TEST_METHOD(PermissionRepairFallsBackToTmpfs) {
+  ControlledExecutionProvider provider;
+  application::WslGuiExecutionService service(&provider);
+  ResultCollector collector;
+  Assert::IsTrue(service
+                     .Start(
+                         ViewerCommand(), [](std::string) {},
+                         [&collector](auto result) {
+                           collector.Complete(std::move(result));
+                         })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, ProcessResult(1));
+  Assert::IsTrue(provider.WaitForStarts(2));
+  provider.Complete(1, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(3));
+  provider.Complete(2, ProcessResult(1));
+  Assert::IsTrue(provider.WaitForStarts(4));
+  const runtime::WslCommand mount = provider.Command(3);
+  Assert::AreEqual(std::wstring(L"/usr/bin/mount"), mount.program);
+  Assert::AreEqual(std::wstring(L"root"), *mount.user);
+  Assert::IsTrue(mount.arguments ==
+                 std::vector<std::wstring>{L"-t", L"tmpfs", L"-o", L"mode=1777",
+                                           L"tmpfs", L"/mnt/shared_memory"});
+  provider.Complete(3, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(5));
+  provider.Complete(4, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(6));
+  provider.Complete(5, ProcessResult());
+  Assert::IsTrue(provider.WaitForStarts(7));
+  Assert::AreEqual(std::wstring(L"klayout"), provider.Command(6).program);
+  provider.Complete(6, ProcessResult());
 
   Assert::IsTrue(collector.Wait());
   Assert::IsTrue(collector.Result().status.Ok());
@@ -159,12 +246,14 @@ TEST_METHOD(RepairFailureDoesNotLaunchViewer) {
   provider.Complete(1, ProcessResult());
   Assert::IsTrue(provider.WaitForStarts(3));
   provider.Complete(2, ProcessResult(32), 2);
+  Assert::IsTrue(provider.WaitForStarts(4));
+  provider.Complete(3, ProcessResult(32), 3);
 
   Assert::IsTrue(collector.Wait());
   Assert::AreEqual(static_cast<std::size_t>(1), collector.Count());
   Assert::IsFalse(collector.Result().status.Ok());
   Assert::IsTrue(collector.Result().repair_attempted);
-  Assert::AreEqual(static_cast<std::size_t>(3), provider.StartCount());
+  Assert::AreEqual(static_cast<std::size_t>(4), provider.StartCount());
 }
 }
 ;
