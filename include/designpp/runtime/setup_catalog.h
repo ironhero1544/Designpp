@@ -37,6 +37,10 @@ struct SetupStep {
 // Builds an idempotent install/update plan for one selected tool.
 [[nodiscard]] std::vector<SetupStep> BuildToolInstallSteps(ToolId tool_id);
 
+// Read-only inventory unless prepare is explicitly requested. Model data is
+// installed atomically in an immutable version directory, outside ORFS.
+[[nodiscard]] ProcessRequest BuildAsap7ModelRequest(bool prepare);
+
 // Builds a removal plan for one selected tool. An empty plan means removal is
 // intentionally unsupported because the tool is shared or externally owned.
 [[nodiscard]] std::vector<SetupStep> BuildToolRemoveSteps(ToolId tool_id);

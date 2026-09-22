@@ -29,9 +29,21 @@ struct VerificationMarker {
 struct VerificationResult {
   bool parsed = false;
   bool passed = false;
+  bool comparison_completed = false;
   std::size_t violation_count = 0;
   std::vector<VerificationMarker> markers;
   std::string detail;
+};
+
+// Immutable evidence available after a verification process terminates.
+// DRC commonly produces a marker database, while KLayout LVS reports its
+// comparison conclusion on stdout even when no standalone database is written.
+struct VerificationResultArtifacts {
+  std::string report;
+  std::string process_output;
+  std::string report_format;
+  bool report_exists = false;
+  std::string comparison_summary;
 };
 
 struct VerificationCommandInput {
@@ -49,6 +61,8 @@ struct VerificationCommandInput {
   std::wstring preparation_script_path;
   std::wstring top_cell;
   std::wstring distribution;
+  std::wstring toolchain_root;
+  std::wstring verification_script_path;
 };
 
 class PhysicalVerificationAdapter {
@@ -70,10 +84,23 @@ class PhysicalVerificationAdapter {
   BuildPreparationCommands(const VerificationCommandInput& input) const;
   [[nodiscard]] virtual core::Result<VerificationResult> ParseReport(
       std::string_view report) const = 0;
+  [[nodiscard]] virtual core::Result<VerificationResult> ParseResult(
+      const VerificationResultArtifacts& artifacts) const;
 };
 
 [[nodiscard]] std::unique_ptr<PhysicalVerificationAdapter>
 CreatePhysicalVerificationAdapter(std::string_view engine);
+
+// KLayout-native driver: applies the hash-verified sky130hd extraction contract
+// and reads the comparison database independently of process log messages.
+[[nodiscard]] std::string BuildKLayoutLvsDriver();
+
+// Converts the standalone CDL '/' before an X-instance model to SPICE syntax.
+// Explicit resistor values named 'short' become zero ohms.
+// Preserves nets, pin order, comments, and line numbers. Ambiguous separators
+// fail rather than changing circuit connectivity.
+[[nodiscard]] core::Result<std::string> NormalizeCdlForSpice(
+    std::string_view contents);
 
 }  // namespace designpp::adapters
 

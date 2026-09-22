@@ -14,6 +14,8 @@ constexpr wchar_t kWindowClassName[] = L"DesignPlusPlus.ToolCheckWindow";
 constexpr int kStartCheckButtonId = 3001;
 constexpr int kInstallToolButtonId = 3002;
 constexpr int kRemoveToolButtonId = 3003;
+constexpr int kActivateToolButtonId = 3004;
+constexpr int kRollbackToolButtonId = 3005;
 
 std::wstring SelectedBundle(const runtime::ToolDefinition& tool) {
   if (tool.display_name.find(L"OpenLane") != std::wstring::npos) {
@@ -39,10 +41,13 @@ bool ToolCheckWindow::CreateOrShow(
     HINSTANCE instance, HWND owner,
     const std::vector<runtime::ToolDefinition>& tools,
     StartCheckCallback start_check, ToolActionCallback install_tool,
-    ToolActionCallback remove_tool) {
+    ToolActionCallback remove_tool, ToolActionCallback activate_tool,
+    ToolActionCallback rollback_tool) {
   start_check_ = std::move(start_check);
   install_tool_ = std::move(install_tool);
   remove_tool_ = std::move(remove_tool);
+  activate_tool_ = std::move(activate_tool);
+  rollback_tool_ = std::move(rollback_tool);
   if (window_ != nullptr) {
     ShowWindow(window_, SW_RESTORE);
     SetForegroundWindow(window_);
@@ -107,6 +112,8 @@ void ToolCheckWindow::SetChecking(bool checking) const {
   }
   EnableWindow(install_button_, !checking);
   EnableWindow(remove_button_, !checking);
+  EnableWindow(activate_button_, !checking);
+  EnableWindow(rollback_button_, !checking);
 }
 
 LRESULT CALLBACK ToolCheckWindow::WindowProcedure(HWND window, UINT message,
@@ -165,6 +172,14 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
         remove_tool_(SelectedToolIndex());
         return 0;
       }
+      if (LOWORD(wparam) == kActivateToolButtonId && activate_tool_) {
+        activate_tool_(SelectedToolIndex());
+        return 0;
+      }
+      if (LOWORD(wparam) == kRollbackToolButtonId && rollback_tool_) {
+        rollback_tool_(SelectedToolIndex());
+        return 0;
+      }
       break;
 
     case WM_NOTIFY:
@@ -194,6 +209,8 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
       start_button_ = nullptr;
       install_button_ = nullptr;
       remove_button_ = nullptr;
+      activate_button_ = nullptr;
+      rollback_button_ = nullptr;
       tool_list_ = nullptr;
       return 0;
 
@@ -225,12 +242,23 @@ bool ToolCheckWindow::CreateControls() {
       0, 0, window_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRemoveToolButtonId)),
       instance_, nullptr);
+  activate_button_ = CreateWindowExW(
+      0, L"BUTTON", L"선택 환경 활성화", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      0, 0, 0, 0, window_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kActivateToolButtonId)),
+      instance_, nullptr);
+  rollback_button_ = CreateWindowExW(
+      0, L"BUTTON", L"이전 환경 롤백", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0,
+      0, 0, 0, window_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRollbackToolButtonId)),
+      instance_, nullptr);
   tool_list_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"Tools",
       WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0,
       0, 0, 0, window_, nullptr, instance_, nullptr);
   if (description_ == nullptr || start_button_ == nullptr ||
       install_button_ == nullptr || remove_button_ == nullptr ||
+      activate_button_ == nullptr || rollback_button_ == nullptr ||
       tool_list_ == nullptr) {
     return false;
   }
@@ -283,9 +311,11 @@ void ToolCheckWindow::LayoutControls(int width, int height) const {
   const int check_width = ScaleForDpi(110, dpi_);
   const int install_width = ScaleForDpi(180, dpi_);
   const int remove_width = ScaleForDpi(110, dpi_);
+  const int activate_width = ScaleForDpi(135, dpi_);
+  const int rollback_width = ScaleForDpi(125, dpi_);
   const int button_height = ScaleForDpi(30, dpi_);
-  const int buttons_width =
-      check_width + install_width + remove_width + gap * 2;
+  const int buttons_width = check_width + install_width + activate_width +
+                            rollback_width + remove_width + gap * 4;
 
   MoveWindow(description_, margin, margin,
              std::max(0, width - margin * 2 - buttons_width - gap),
@@ -296,6 +326,12 @@ void ToolCheckWindow::LayoutControls(int width, int height) const {
   MoveWindow(install_button_, button_x, margin, install_width, button_height,
              TRUE);
   button_x += install_width + gap;
+  MoveWindow(activate_button_, button_x, margin, activate_width, button_height,
+             TRUE);
+  button_x += activate_width + gap;
+  MoveWindow(rollback_button_, button_x, margin, rollback_width, button_height,
+             TRUE);
+  button_x += rollback_width + gap;
   MoveWindow(remove_button_, button_x, margin, remove_width, button_height,
              TRUE);
   const int list_top =
@@ -309,6 +345,12 @@ void ToolCheckWindow::UpdateActionButtonLabels() const {
   SetWindowTextW(install_button_, has_selection ? L"선택 환경 준비 / 복구"
                                                 : L"전체 환경 준비 / 복구");
   SetWindowTextW(remove_button_, has_selection ? L"선택 삭제" : L"전체 삭제");
+  const auto selected = SelectedToolIndex();
+  const bool managed =
+      selected && (tools_[*selected].id == runtime::ToolId::kOpenLane2 ||
+                   tools_[*selected].id == runtime::ToolId::kOrfs);
+  EnableWindow(activate_button_, managed);
+  EnableWindow(rollback_button_, managed);
 }
 
 std::optional<std::size_t> ToolCheckWindow::SelectedToolIndex() const {

@@ -778,7 +778,16 @@ void TimingWindow::ApplyState(application::TimingRunState state) {
   SetWindowTextW(status_, status_text.c_str());
 }
 
+void TimingWindow::AppendCentralLog(std::wstring_view text) const {
+  if (!central_log_ || text.empty()) return;
+  const core::Cell* cell = FindCell(library_, request_.cell_id);
+  const std::wstring prefix =
+      cell ? L"[Timing " + Utf8ToWide(cell->name) + L"] " : L"[Timing] ";
+  central_log_(prefix + std::wstring(text));
+}
+
 void TimingWindow::AppendOutput(std::wstring_view text) {
+  AppendCentralLog(text);
   const int length = GetWindowTextLengthW(output_);
   SendMessageW(output_, EM_SETSEL, length, length);
   SendMessageW(output_, EM_REPLACESEL, FALSE,

@@ -19,6 +19,7 @@ enum class RunStatus {
   kQueued,
   kRunning,
   kSucceeded,
+  kViolated,
   kFailed,
   kCancelled,
   kInterrupted,

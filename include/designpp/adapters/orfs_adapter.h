@@ -62,6 +62,8 @@ struct OrfsPlatformCandidate {
   std::string name;
   bool runnable = false;
   std::string reason;
+  bool drc_ready = false;
+  bool lvs_ready = false;
 };
 
 // Adapter for the upstream OpenROAD Flow Scripts checkout.  It generates an

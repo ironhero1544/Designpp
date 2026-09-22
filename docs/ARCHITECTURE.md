@@ -2,6 +2,35 @@
 
 ## Layout Setup editing and persistence
 
+`PdkManagerWindow` captures Library/Cell identity on opening. Its workers use
+`PdkSelectionService` for profile resolution and ProjectService-backed atomic
+Cell updates. A revision-checked application update may share a writer lease
+already held by a window in the same process. Ordinary editor opens remain
+exclusive, and stale snapshots still fail before atomic replacement. The GUI
+does not assemble EDA commands. Existing discovery
+services enumerate installed technologies on the bounded PDK worker; starting,
+replacing, and cancelling their process handles never occurs in a Win32 message
+handler. Selection does not imply DRC/LVS qualification. A timer drains the
+generation-tagged operation results from a per-session channel without worker
+HWND access. Save keeps the window open, refreshes matching workspace windows,
+and does not bypass other project writers. Closing while saving is deferred to
+user retry after completion.
+
+ORFS discovery reports platform execution readiness separately from the presence
+of DRC rules and LVS rule/model inputs. `PdkManagerWindow` intersects those facts
+with `ResolveVerificationCapability`; only a validated registered recipe is
+shown as ready. The result distinguishes an unavailable platform, missing native
+files, and an unregistered managed recipe. This keeps platform-specific policy in
+the application/adapter boundary and prevents the GUI from inferring verification
+support from names.
+
+ASAP7 installation and flow readiness are established by an engine run that
+loads the 7.5-track Liberty families, platform LEF, and `setRC.tcl`, then writes
+the tapcell ODB. A later routing-layer rule violation is a flow result and does
+not downgrade PDK discovery or loading. Verification capabilities remain a
+separate contract: this evidence does not provide an ASAP7 LVS extraction
+recipe or enable LVS in the UI.
+
 `LayoutSetupController` owns the heap-allocated per-window editing session.
 `LayoutSetupDraft` normalizes blank fields before core validation; adapters and
 fingerprints consume effective configuration. Setup and Monaco use the application
@@ -11,9 +40,35 @@ Ctrl+S use the same asynchronous Cell-scoped ProjectService write. Successful Sa
 keeps Setup open. Failed writes preserve input. Pending Close is deferred until
 save completion, and Run consumes the saved configuration.
 
+The PDK manager and Layout Setup are modeless, independent top-level windows.
+Their opener is used only for initial DPI and placement; it is not assigned as a
+Win32 owner. Closing either tool therefore cannot hide another workspace window.
+Dialog message translation is limited to the Setup window and its child controls.
+
 ## Dependency direction
 
+## Toolchain compatibility contracts
+
+OpenLane 2 and ORFS support is defined by the compiled-in
+`ToolchainCompatibilityCatalog`. A supported bundle binds an exact framework
+revision, dependency revisions, command contract, required capabilities, and a
+regression fixture. Install, Tool Check, flow execution, viewer, and physical
+verification consume this common decision instead of selecting behavior from a
+displayed version string.
+
+Prepared environments are published under immutable bundle directories.
+Preparation, registration, activation, and rollback are separate operations.
+Activation and rollback require a fresh bounded compatibility probe and an
+atomic settings revision update. A Run captures its environment fingerprint at
+start and rejects a changed environment before using prior checkpoints.
+
 ### Tool Check migration status
+
+ASAP7 CDL data preparation is a separate runtime setup command shared by Tool
+Check and ORFS installation. It publishes hash-verified official model files in
+an immutable commit directory outside the ORFS checkout, protected by flock.
+The inventory mode returns before any download or mutation. Model presence is
+not evidence of KLayout extraction compatibility and never enables LVS by itself.
 
 Toolchain profile schema v2 preserves legacy paths as custom/unverified and
 stores independent OpenLane/ORFS bundle selections. Reading v1 does not rewrite
@@ -213,6 +268,56 @@ malformed reports never pass, and the raw report plus input hash manifest are
 retained. Layout only renders immutable events and marks results from another
 GDS source Run stale.
 
+Each probe, preparation command, and verification engine process receives a
+monotonic invocation ID before `ExecutionProvider::Start`. A completion advances
+the state machine only while that ID remains active. This also covers providers
+that complete synchronously inside `Start`: the returned completed handle is
+retired instead of overwriting the next process handle. Duplicate and stale
+callbacks cannot deliver a second terminal event, and handle destruction stays
+on the cleanup worker.
+
+The runtime tool catalog does not list or probe Calibre. KLayout recipe/model
+readiness is independent of commercial tool installation.
+
+For the ORFS sky130hd KLayout LVS recipe, the verification Run also pins the
+same Run's final ODB and source netlist. The adapter stages the platform CDL
+model, exports a design CDL with OpenROAD `read_db`/`write_cdl -masters`, and
+combines and validates both definitions before invoking KLayout. Generated
+CDL, model snapshots, extraction output, and preparation diagnostics remain
+verification artifacts; the source Layout Run and ORFS checkout are never
+modified.
+The combined CDL copy normalizes the standalone slash before an X-instance
+model into SPICE syntax. Cell model and design originals retain their bytes;
+normalization preserves pin order, node names, and source line numbers.
+Explicit CDL resistor values named `short` become SPICE zero-ohm values;
+this does not infer new shorts or reconnect supply pins.
+
+Managed verification recipes are resolved in the application layer from the
+selected source Run's backend and platform. The Layout window has no platform
+paths, rule entrypoints, or tool command decisions. A verification input
+manifest schema v3 records the immutable source hashes and recipe/environment
+contract. DRC marker parsing and LVS comparison parsing are separate: a clean
+process exit does not constitute a passing LVS result.
+
+KLayout LVS runs an adapter-generated native driver. The explicit
+`sky130hd-bulk-v1` contract accepts only source rule SHA-256
+`1afade11dd24ea4e64d1ffba54fc17a8f110286712ab942928d2f5e021bb3caf`
+and verifies each replacement anchor. It connects the recipe's conductor/PIN/TXT
+triples and simplifies both netlists symmetrically, without cell-name exclusions.
+Its substrate is boundary minus nwell. Preflight requires boundary and well and
+rejects deep-well/isolation geometry; this is not a general substrate model.
+Only geometrically touching shapes connect; no supply-name alias is introduced.
+Custom rules do not receive this transformation. Original and effective macros,
+actual SHA-256 hashes, changes, and before/after netlists and device/circuit counts
+are saved with the verification Run. The installation is unchanged.
+The driver requests `report_lvs`, reopens the database through
+`LayoutVsSchematic`, and enumerates its cross reference. Logs are not pass
+evidence. Circuit mismatch counts and skipped comparisons are distinct;
+`comparison_completed` is false when any circuit was skipped. Native database
+and per-circuit pin/net/device/subcircuit details remain available as artifacts.
+The remaining environment resolution still uses the existing profile/flake
+path and is not yet a fully immutable executable snapshot.
+
 The next completed presentation slice is Source double-click → managed UTF-8 load
 → Monaco model/tab → explicit atomic save → external-change conflict handling.
 Verilator diagnostics are mapped to Monaco markers and Problems navigation without
@@ -255,6 +360,15 @@ simulation or debug process, rejects stale generation callbacks, and emits at
 most one terminal event. It owns no HWND and posts immutable events through its
 caller-provided sink. `VerilogWindow` remains responsible for user prompts,
 control presentation, and Monaco navigation.
+
+EDA commands execute directly through WslExecutionProvider and WslExecutor.
+For unregistered custom Layout tool paths, GUI requests leave the environment
+fingerprint unset. The application service validates the actual compatibility
+probe and records its fingerprint before execution. A hash of a configured path
+is not toolchain compatibility evidence. Registered environments still require
+their saved fingerprint to match the fresh probe; corrupt registrations fail.
+The backtick shell debugger and tmux wrapper were removed on 2026-09-22
+at the user's request. Backtick is ordinary editor input.
 
 `SynthesisRunService` owns the complete Yosys state machine: capability probe,
 CPU-token acquisition, exclusive run-directory creation, script persistence,

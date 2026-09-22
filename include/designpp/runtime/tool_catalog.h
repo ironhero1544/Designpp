@@ -27,6 +27,7 @@ enum class ToolId {
   kOrfs,
   kDocker,
   kNix,
+  kAsap7Models,
 };
 
 enum class InstallMethod {

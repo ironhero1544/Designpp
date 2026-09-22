@@ -45,10 +45,13 @@
     <ClCompile Include="src\core\project.cc" />
     <ClCompile Include="src\application\layout_setup_draft.cc" />
     <ClCompile Include="src\core\toolchain_profile.cc" />
+    <ClCompile Include="src\core\toolchain_compatibility.cc" />
+    <ClCompile Include="src\adapters\toolchain_compatibility_probe.cc" />
     <ClCompile Include="src\gui\orthogonal_edge_router.cc" />
     <ClCompile Include="src\gui\schematic_scene_builder.cc" />
     <ClCompile Include="src\runtime\path_mapper.cc" />
     <ClCompile Include="src\runtime\process_runner.cc" />
+    <ClCompile Include="src\runtime\execution_provider.cc" />
     <ClCompile Include="src\runtime\wsl_executor.cc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

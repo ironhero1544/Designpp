@@ -35,6 +35,7 @@ enum class UiEventKind {
   kLibraryRefresh,
   kRecentWorkspaces,
   kBrowserFilter,
+  kToolchainManagement,
 };
 
 struct UiEvent {
@@ -476,6 +477,9 @@ LRESULT LibraryManagerWindow::HandleMessage(UINT message, WPARAM wparam,
         case IDM_TOOL_CHECK:
           OpenToolCheck();
           return 0;
+        case IDM_PDK_MANAGER:
+          OpenPdkManager();
+          return 0;
         case IDM_TOOLCHAIN_DOCTOR:
           OpenToolchainDoctor();
           return 0;
@@ -674,9 +678,10 @@ bool LibraryManagerWindow::CreateControls() {
       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE |
           ES_AUTOVSCROLL | ES_READONLY,
       0, 0, 0, 0, window_, nullptr, instance_, nullptr);
-  status_ = CreateWindowExW(0, STATUSCLASSNAMEW, nullptr,
-                            WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0,
-                            window_, nullptr, instance_, nullptr);
+  status_ =
+      CreateWindowExW(0, STATUSCLASSNAMEW, nullptr,
+                      WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | SBARS_SIZEGRIP,
+                      0, 0, 0, 0, window_, nullptr, instance_, nullptr);
   progress_ =
       CreateWindowExW(0, PROGRESS_CLASSW, L"Progress", WS_CHILD | WS_VISIBLE, 0,
                       0, 0, 0, status_, nullptr, instance_, nullptr);
@@ -693,6 +698,7 @@ bool LibraryManagerWindow::CreateControls() {
   ApplyDpi(dpi_);
   SetBusyControls(false);
   SetStatus(L"대기 중");
+  RefreshProgressDisplay();
   return true;
 }
 
@@ -1368,6 +1374,9 @@ void LibraryManagerWindow::SubmitLibraryOperation(
   if (!accepted) {
     SetStatus(L"Library 작업 대기열이 가득 찼습니다.");
     AppendLog(L"[Library] 작업 대기열이 가득 찼습니다.\r\n");
+  } else {
+    ++pending_library_operations_;
+    RefreshProgressDisplay();
   }
 }
 
@@ -1806,7 +1815,8 @@ void LibraryManagerWindow::LayoutControls(int width, int height) const {
 
   RECT status_client{};
   GetClientRect(status_, &status_client);
-  const int first_part = ScaleForDpi(230, dpi_);
+  const int first_part = std::min(ScaleForDpi(230, dpi_),
+                                  static_cast<int>(status_client.right) / 2);
   const int parts[] = {first_part, -1};
   SendMessageW(status_, SB_SETPARTS, std::size(parts),
                reinterpret_cast<LPARAM>(parts));
@@ -1896,6 +1906,29 @@ void LibraryManagerWindow::ApplyDpi(UINT dpi) {
   LayoutControls(client.right - client.left, client.bottom - client.top);
 }
 
+void LibraryManagerWindow::OpenPdkManager() {
+  if (!selected_library_ || !selected_cell_) {
+    MessageBoxW(window_, L"PDK를 적용할 Cell을 먼저 선택하세요.", L"PDK 관리",
+                MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  const auto& record = libraries_[*selected_library_];
+  const auto& cell = record.library.cells[*selected_cell_];
+  if (!pdk_manager_window_)
+    pdk_manager_window_ = std::make_unique<PdkManagerWindow>();
+  if (!pdk_manager_window_->CreateOrShow(
+          instance_, window_, record, cell.id, cell.name,
+          [this]() { OpenToolchainDoctor(); },
+          [this, record]() {
+            if (workspace_registry_) {
+              workspace_registry_->RefreshLibrary(record);
+            }
+          })) {
+    MessageBoxW(window_, L"PDK 관리 창을 열 수 없습니다.", L"PDK 관리",
+                MB_OK | MB_ICONERROR);
+  }
+}
+
 void LibraryManagerWindow::OpenToolCheck() {
   if (tool_check_window_ == nullptr) {
     tool_check_window_ = std::make_unique<ToolCheckWindow>();
@@ -1909,6 +1942,17 @@ void LibraryManagerWindow::OpenToolCheck() {
           [this](std::optional<std::size_t> index) {
             index.has_value() ? StartToolRemove(*index)
                               : StartToolchainRemove();
+          },
+          [this](std::optional<std::size_t> index) {
+            if (index)
+              StartToolchainManagement(
+                  *index,
+                  application::ToolchainManagementAction::kActivatePrepared);
+          },
+          [this](std::optional<std::size_t> index) {
+            if (index)
+              StartToolchainManagement(
+                  *index, application::ToolchainManagementAction::kRollback);
           })) {
     MessageBoxW(window_, L"Tool Check 창을 만들 수 없습니다.",
                 L"Design++ Library Manager", MB_OK | MB_ICONERROR);
@@ -1919,6 +1963,57 @@ void LibraryManagerWindow::OpenToolCheck() {
                                      tool_states_[index].version);
   }
   tool_check_window_->SetChecking(operation_ != Operation::kIdle);
+}
+
+void LibraryManagerWindow::StartToolchainManagement(
+    std::size_t tool_index, application::ToolchainManagementAction action) {
+  if (operation_ != Operation::kIdle || tool_index >= tools_.size()) return;
+  std::string provider;
+  std::string bundle;
+  if (tools_[tool_index].id == runtime::ToolId::kOpenLane2) {
+    provider = "openlane2";
+    bundle = "openlane2-2.3.10";
+  } else if (tools_[tool_index].id == runtime::ToolId::kOrfs) {
+    provider = "orfs";
+    bundle = "orfs-26Q2";
+  } else {
+    return;
+  }
+  operation_ = Operation::kInstallingTool;
+  SetBusyControls(true);
+  ShowIndeterminateProgress();
+  SetStatus(action == application::ToolchainManagementAction::kRollback
+                ? L"이전 환경을 검사하고 롤백합니다..."
+                : L"준비된 환경을 검사하고 활성화합니다...");
+  const auto channel = event_channel_;
+  const bool queued = library_scheduler_.Submit(
+      [channel, provider = std::move(provider), bundle = std::move(bundle),
+       action, tool_index](std::stop_token token) {
+        application::ToolchainProfileStore store;
+        runtime::WslExecutionProvider execution;
+        auto result = application::ManageToolchain(store, execution, provider,
+                                                   bundle, action, token);
+        UiEvent event{};
+        event.kind = UiEventKind::kToolchainManagement;
+        event.task_id = tool_index;
+        event.library_status =
+            result.Ok() ? core::Status::Success() : result.GetStatus();
+        if (result.Ok()) {
+          event.action = Utf8ToWide(result.Value().bundle_id + " / " +
+                                    result.Value().command_contract_id);
+        }
+        HWND target = nullptr;
+        {
+          std::scoped_lock lock(channel->mutex);
+          if (!channel->window) return;
+          channel->events.push_back(std::move(event));
+          target = channel->window;
+        }
+        PostMessageW(target, kEventsReadyMessage, 0, 0);
+      });
+  if (!queued) {
+    FinishOperation(L"환경 관리 worker가 종료되어 작업을 시작하지 못했습니다.");
+  }
 }
 
 void LibraryManagerWindow::OpenToolchainDoctor() {
@@ -1938,10 +2033,12 @@ void LibraryManagerWindow::StartToolInstall(std::size_t tool_index) {
   std::vector<runtime::SetupStep> steps =
       runtime::BuildToolInstallSteps(tools_[tool_index].id);
   if (steps.empty()) {
-    MessageBoxW(window_,
-                L"이 항목은 Design++가 직접 설치하지 않는 선택적 외부 "
-                L"provider입니다.",
-                L"개별 설치 지원 안 함", MB_OK | MB_ICONINFORMATION);
+    const std::wstring guidance =
+        L"이 항목은 Design++가 직접 설치하지 않는 선택적 외부 "
+        L"provider입니다.\n\n" +
+        tools_[tool_index].install_hint;
+    MessageBoxW(window_, guidance.c_str(), L"개별 설치 지원 안 함",
+                MB_OK | MB_ICONINFORMATION);
     return;
   }
   const std::wstring question = tools_[tool_index].display_name +
@@ -1956,9 +2053,7 @@ void LibraryManagerWindow::StartToolInstall(std::size_t tool_index) {
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  SendMessageW(progress_, PBM_SETRANGE32, 0,
-               static_cast<LPARAM>(setup_steps_.size()));
-  SendMessageW(progress_, PBM_SETPOS, 0, 0);
+  ShowDeterminateProgress(setup_steps_.size());
   SetBusyControls(true);
   AppendLog(L"\r\n=== 개별 설치 / 업데이트: " +
             tools_[tool_index].display_name + L" ===\r\n");
@@ -2004,9 +2099,7 @@ void LibraryManagerWindow::StartToolRemove(std::size_t tool_index) {
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  SendMessageW(progress_, PBM_SETRANGE32, 0,
-               static_cast<LPARAM>(setup_steps_.size()));
-  SendMessageW(progress_, PBM_SETPOS, 0, 0);
+  ShowDeterminateProgress(setup_steps_.size());
   SetBusyControls(true);
   AppendLog(L"\r\n=== 개별 삭제: " + tools_[tool_index].display_name +
             L" ===\r\n");
@@ -2033,9 +2126,7 @@ void LibraryManagerWindow::StartToolchainRemove() {
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  SendMessageW(progress_, PBM_SETRANGE32, 0,
-               static_cast<LPARAM>(setup_steps_.size()));
-  SendMessageW(progress_, PBM_SETPOS, 0, 0);
+  ShowDeterminateProgress(setup_steps_.size());
   SetBusyControls(true);
   AppendLog(L"\r\n=== 전체 EDA Toolchain 삭제 시작 ===\r\n");
   StartNextSetupStep();
@@ -2049,9 +2140,7 @@ void LibraryManagerWindow::StartToolCheck() {
   next_tool_index_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  SendMessageW(progress_, PBM_SETRANGE32, 0,
-               static_cast<LPARAM>(tools_.size()));
-  SendMessageW(progress_, PBM_SETPOS, 0, 0);
+  ShowDeterminateProgress(tools_.size());
   SetBusyControls(true);
   SetStatus(L"Design++ 실행 요구 사항을 병렬로 검사하고 있습니다...");
   AppendLog(L"\r\n=== Design++ 도구 및 Runtime 검사 시작 ===\r\n");
@@ -2078,9 +2167,7 @@ void LibraryManagerWindow::StartWslSetup() {
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  SendMessageW(progress_, PBM_SETRANGE32, 0,
-               static_cast<LPARAM>(setup_steps_.size()));
-  SendMessageW(progress_, PBM_SETPOS, 0, 0);
+  ShowDeterminateProgress(setup_steps_.size());
   SetBusyControls(true);
   AppendLog(L"\r\n=== WSL2 자동 설정 시작 ===\r\n");
   StartNextSetupStep();
@@ -2106,9 +2193,7 @@ void LibraryManagerWindow::StartToolchainSetup() {
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  SendMessageW(progress_, PBM_SETRANGE32, 0,
-               static_cast<LPARAM>(setup_steps_.size()));
-  SendMessageW(progress_, PBM_SETPOS, 0, 0);
+  ShowDeterminateProgress(setup_steps_.size());
   SetBusyControls(true);
   AppendLog(L"\r\n=== 전체 EDA Toolchain 설치 / 업데이트 시작 ===\r\n");
   StartNextSetupStep();
@@ -2260,6 +2345,9 @@ void LibraryManagerWindow::HandleQueuedEvents() {
 
   for (UiEvent& event : events) {
     if (event.kind == UiEventKind::kLibraryRefresh) {
+      if (pending_library_operations_ > 0) {
+        --pending_library_operations_;
+      }
       if (event.library_status.Ok()) {
         libraries_ = std::move(event.libraries);
         libraries_loaded_ = true;
@@ -2310,6 +2398,7 @@ void LibraryManagerWindow::HandleQueuedEvents() {
         MessageBoxW(window_, message.c_str(), L"Library 작업 오류",
                     MB_OK | MB_ICONERROR);
       }
+      RefreshProgressDisplay();
     } else if (event.kind == UiEventKind::kRecentWorkspaces) {
       if (event.library_status.Ok()) {
         recent_workspaces_ = std::move(event.recent_workspaces);
@@ -2321,6 +2410,16 @@ void LibraryManagerWindow::HandleQueuedEvents() {
     } else if (event.kind == UiEventKind::kBrowserFilter) {
       ApplyBrowserResults(event.browser_generation,
                           std::move(event.browser_results));
+    } else if (event.kind == UiEventKind::kToolchainManagement) {
+      const std::size_t index = static_cast<std::size_t>(event.task_id);
+      if (event.library_status.Ok()) {
+        SetToolState(index, L"활성 / 호환성 검증됨", event.action);
+        FinishOperation(L"Toolchain 환경 선택이 완료되었습니다.");
+      } else {
+        const std::wstring message = Utf8ToWide(event.library_status.message);
+        SetToolState(index, L"환경 선택 실패", message);
+        FinishOperation(L"Toolchain 환경 선택이 실패했습니다.");
+      }
     } else if (event.kind == UiEventKind::kOutput) {
       std::string& remainder = decoder_remainders_[event.task_id];
       const std::wstring decoded =
@@ -2421,6 +2520,7 @@ void LibraryManagerWindow::FinishOperation(std::wstring status) {
   SetBusyControls(false);
   SetStatus(status);
   AppendLog(L"=== " + status + L" ===\r\n");
+  RefreshProgressDisplay();
 }
 
 void LibraryManagerWindow::SetBusyControls(bool busy) const {
@@ -2440,6 +2540,33 @@ void LibraryManagerWindow::SetBusyControls(bool busy) const {
 void LibraryManagerWindow::SetStatus(std::wstring_view status) const {
   const std::wstring text(status);
   SendMessageW(status_, SB_SETTEXTW, 1, reinterpret_cast<LPARAM>(text.c_str()));
+}
+
+void LibraryManagerWindow::ShowDeterminateProgress(
+    std::size_t maximum, std::size_t completed) const {
+  SendMessageW(progress_, PBM_SETMARQUEE, FALSE, 0);
+  SetWindowLongPtrW(progress_, GWL_STYLE,
+                    GetWindowLongPtrW(progress_, GWL_STYLE) & ~PBS_MARQUEE);
+  const std::size_t safe_maximum = std::max<std::size_t>(maximum, 1);
+  SendMessageW(progress_, PBM_SETRANGE32, 0, static_cast<LPARAM>(safe_maximum));
+  SendMessageW(progress_, PBM_SETPOS,
+               static_cast<WPARAM>(std::min(completed, safe_maximum)), 0);
+  InvalidateRect(progress_, nullptr, TRUE);
+}
+
+void LibraryManagerWindow::ShowIndeterminateProgress() const {
+  SetWindowLongPtrW(progress_, GWL_STYLE,
+                    GetWindowLongPtrW(progress_, GWL_STYLE) | PBS_MARQUEE);
+  SendMessageW(progress_, PBM_SETMARQUEE, TRUE, 35);
+}
+
+void LibraryManagerWindow::RefreshProgressDisplay() const {
+  if (operation_ != Operation::kIdle) return;
+  if (pending_library_operations_ > 0) {
+    ShowIndeterminateProgress();
+    return;
+  }
+  ShowDeterminateProgress(1, 0);
 }
 
 void LibraryManagerWindow::SetToolState(std::size_t index, std::wstring status,

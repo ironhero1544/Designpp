@@ -62,6 +62,7 @@ BEGIN
     POPUP "도구(&T)"
     BEGIN
         MENUITEM "Tool Check...",             IDM_TOOL_CHECK
+        MENUITEM "PDK 관리...",               IDM_PDK_MANAGER
         MENUITEM "Toolchain Doctor...",       IDM_TOOLCHAIN_DOCTOR
         MENUITEM SEPARATOR
         MENUITEM "WSL2 Setup...",             IDM_WSL_SETUP

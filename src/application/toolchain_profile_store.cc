@@ -370,6 +370,17 @@ core::Result<core::ToolchainSettings> Decode(std::string_view json) {
                       "Installed toolchain environment is malformed", 0};
       }
       environment.verified = verified == 1;
+      if (schema >= 4 &&
+          (!ReadString(*object, "command_contract_id",
+                       &environment.command_contract_id) ||
+           !ReadString(*object, "framework_revision",
+                       &environment.framework_revision) ||
+           !ReadString(*object, "lock_hash", &environment.lock_hash))) {
+        return Status{ErrorCode::kCorruptData,
+                      "Toolchain compatibility evidence is malformed", 0};
+      }
+      // Older verification flags did not attest a command contract.
+      if (schema < 4) environment.verified = false;
       settings.environments.push_back(std::move(environment));
     }
     for (const JsonValue& value : *recipes) {
@@ -466,6 +477,12 @@ std::string Encode(const core::ToolchainSettings& settings) {
     quote(environment.version);
     output << ", \"fingerprint\": ";
     quote(environment.fingerprint);
+    output << ", \"command_contract_id\": ";
+    quote(environment.command_contract_id);
+    output << ", \"framework_revision\": ";
+    quote(environment.framework_revision);
+    output << ", \"lock_hash\": ";
+    quote(environment.lock_hash);
     output << ", \"verified\": " << (environment.verified ? 1 : 0) << '}';
   }
   output << "\n  ],\n  \"verification_recipes\": [";

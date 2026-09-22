@@ -65,6 +65,7 @@ class TimingWindow final : public ViewWindow {
   void PopulateConfiguration();
   void StartTiming();
   void ApplyState(application::TimingRunState state);
+  void AppendCentralLog(std::wstring_view text) const;
   void AppendOutput(std::wstring_view text);
   void ShowProblems();
   void ShowRuns();

@@ -20,8 +20,7 @@ namespace designpp::gui {
 class ToolCheckWindow final {
  public:
   using StartCheckCallback = std::function<void()>;
-  using ToolActionCallback =
-      std::function<void(std::optional<std::size_t>)>;
+  using ToolActionCallback = std::function<void(std::optional<std::size_t>)>;
 
   ToolCheckWindow() = default;
   ToolCheckWindow(const ToolCheckWindow&) = delete;
@@ -33,7 +32,8 @@ class ToolCheckWindow final {
       HINSTANCE instance, HWND owner,
       const std::vector<runtime::ToolDefinition>& tools,
       StartCheckCallback start_check, ToolActionCallback install_tool,
-      ToolActionCallback remove_tool);
+      ToolActionCallback remove_tool, ToolActionCallback activate_tool,
+      ToolActionCallback rollback_tool);
 
   // Updates one tool row.
   void SetToolState(std::size_t index, std::wstring_view status,
@@ -61,6 +61,8 @@ class ToolCheckWindow final {
   HWND start_button_ = nullptr;
   HWND install_button_ = nullptr;
   HWND remove_button_ = nullptr;
+  HWND activate_button_ = nullptr;
+  HWND rollback_button_ = nullptr;
   HWND tool_list_ = nullptr;
   UINT dpi_ = kDefaultDpi;
   UniqueFont font_;
@@ -68,6 +70,8 @@ class ToolCheckWindow final {
   StartCheckCallback start_check_;
   ToolActionCallback install_tool_;
   ToolActionCallback remove_tool_;
+  ToolActionCallback activate_tool_;
+  ToolActionCallback rollback_tool_;
 };
 
 }  // namespace designpp::gui

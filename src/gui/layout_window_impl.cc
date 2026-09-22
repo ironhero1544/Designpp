@@ -359,17 +359,10 @@ std::filesystem::path FindNetlist(const application::RunRecord& run,
                                   bool extracted) {
   for (const application::RunArtifact& artifact : run.artifacts) {
     if (artifact.partial) continue;
-    std::string format = artifact.format;
-    std::transform(format.begin(), format.end(), format.begin(),
-                   [](unsigned char character) {
-                     return static_cast<char>(std::tolower(character));
-                   });
-    const bool spice = format == "spice" || format == "cdl" ||
-                       artifact.relative_path.ends_with(".spice") ||
-                       artifact.relative_path.ends_with(".cdl");
-    const bool schematic =
-        artifact.kind == "netlist.v" || artifact.kind == "power.v" || spice;
-    if ((extracted ? spice : schematic)) {
+    const bool is_final_schematic =
+        artifact.kind == "netlist.v" || artifact.kind == "gate_netlist";
+    const bool is_extracted = artifact.kind == "verification.extracted_netlist";
+    if (extracted ? is_extracted : is_final_schematic) {
       const std::filesystem::path path = run.directory / artifact.relative_path;
       std::error_code error;
       if (std::filesystem::is_regular_file(path, error) && !error &&
@@ -382,49 +375,18 @@ std::filesystem::path FindNetlist(const application::RunRecord& run,
 }
 
 std::vector<core::VerificationRecipe> BuiltinVerificationRecipes(
-    const core::Project& project, const core::ToolchainProfile& profile) {
-  std::vector<core::VerificationRecipe> recipes;
-  if (project.physical_implementation.backend_id != "orfs" ||
-      profile.orfs_root.empty()) {
-    return recipes;
+    const core::Project& project, const core::ToolchainProfile& profile,
+    const application::RunRecord* source_run) {
+  std::string backend = project.physical_implementation.backend_id;
+  std::string platform = project.physical_implementation.orfs.platform;
+  if (source_run) {
+    const auto run_backend = RunSummaryString(*source_run, "backend_id");
+    const auto run_platform = RunSummaryString(*source_run, "platform");
+    if (run_backend && !run_backend->empty()) backend = *run_backend;
+    if (run_platform && !run_platform->empty()) platform = *run_platform;
   }
-  const std::string& platform = project.physical_implementation.orfs.platform;
-  if (platform == "asap7" || platform == "sky130hd") {
-    core::VerificationRecipe drc;
-    drc.id = "builtin.orfs." + platform + ".klayout-drc";
-    drc.name = "ORFS " + platform + " KLayout DRC";
-    drc.engine = "klayout_drc";
-    drc.provider_id = "orfs";
-    drc.platform = platform;
-    drc.root = profile.orfs_root + "/flow/platforms/" + platform;
-    drc.entrypoint = "drc/" + platform + ".lydrc";
-    drc.output_format = "lyrdb";
-    drc.content_hash =
-        "orfs-26q2:036d106273e66855cd5214d49518fd0f0df7de61:" + platform +
-        ":drc";
-    drc.trusted = true;
-    drc.managed = true;
-    recipes.push_back(std::move(drc));
-  }
-  if (platform == "sky130hd") {
-    core::VerificationRecipe lvs;
-    lvs.id = "builtin.orfs.sky130hd.klayout-lvs";
-    lvs.name = "ORFS sky130hd KLayout LVS";
-    lvs.engine = "klayout_lvs";
-    lvs.provider_id = "orfs";
-    lvs.platform = platform;
-    lvs.root = profile.orfs_root + "/flow/platforms/sky130hd";
-    lvs.entrypoint = "lvs/sky130hd.lylvs";
-    lvs.reference_netlist = "cdl/sky130hd.cdl";
-    lvs.output_format = "lvsdb";
-    lvs.content_hash =
-        "orfs-26q2:036d106273e66855cd5214d49518fd0f0df7de61:"
-        "sky130hd:lvs";
-    lvs.trusted = true;
-    lvs.managed = true;
-    recipes.push_back(std::move(lvs));
-  }
-  return recipes;
+  return application::ResolveManagedVerificationRecipes(profile, backend,
+                                                        platform);
 }
 
 std::filesystem::path FindStageCheckpoint(const application::RunRecord& run,
@@ -593,6 +555,7 @@ std::array<std::wstring, 6> BuildStageLabels(
       if (!SameOrfsLineage(run, selected_run) ||
           (run.status != application::RunStatus::kRunning &&
            run.status != application::RunStatus::kSucceeded &&
+           run.status != application::RunStatus::kViolated &&
            run.status != application::RunStatus::kFailed &&
            run.status != application::RunStatus::kInterrupted &&
            run.status != application::RunStatus::kCancelled)) {
@@ -626,6 +589,7 @@ std::array<std::wstring, 6> BuildStageLabels(
           state = has_checkpoint ? L"Complete" : L"Stale";
           break;
         case application::RunStatus::kFailed:
+        case application::RunStatus::kViolated:
         case application::RunStatus::kInterrupted:
         case application::RunStatus::kCancelled:
           state = L"Failed";
@@ -1224,55 +1188,64 @@ LRESULT LayoutWindowImplementation::HandleMessage(UINT message, WPARAM wparam,
 
 bool LayoutWindowImplementation::CreateControls() {
   font_ = CreateUiFont(dpi_);
-  const auto create = [this](const wchar_t* cls, const wchar_t* text,
-                             DWORD style, int id) {
+  const auto create = [this](HWND parent, const wchar_t* cls,
+                             const wchar_t* text, DWORD style, int id) {
     HWND control = CreateWindowExW(
-        0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, window_,
+        0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0, parent,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_.Get()),
                  TRUE);
     return control;
   };
-  identity_ = create(L"STATIC", L"Layout", SS_LEFT, 0);
-  run_button_ =
-      create(L"BUTTON", L"Generate / Update Layout", BS_PUSHBUTTON, kRunButton);
-  cancel_button_ = create(L"BUTTON", L"Cancel", BS_PUSHBUTTON, kCancelButton);
+  const auto create_window =
+      [&create, this](const wchar_t* cls, const wchar_t* text, DWORD style,
+                      int id) { return create(window_, cls, text, style, id); };
+  identity_ = create_window(L"STATIC", L"Layout", SS_LEFT, 0);
+  run_button_ = create_window(L"BUTTON", L"Generate / Update Layout",
+                              BS_PUSHBUTTON, kRunButton);
+  cancel_button_ =
+      create_window(L"BUTTON", L"Cancel", BS_PUSHBUTTON, kCancelButton);
   resume_button_ =
-      create(L"BUTTON", L"Open Layout", BS_PUSHBUTTON, kResumeButton);
-  stages_button_ = create(L"BUTTON", L"Stages", BS_PUSHBUTTON, kStagesButton);
-  config_button_ = create(L"BUTTON", L"Setup", BS_PUSHBUTTON, kConfigButton);
+      create_window(L"BUTTON", L"Open Layout", BS_PUSHBUTTON, kResumeButton);
+  stages_button_ =
+      create_window(L"BUTTON", L"Stages", BS_PUSHBUTTON, kStagesButton);
+  config_button_ =
+      create_window(L"BUTTON", L"Setup", BS_PUSHBUTTON, kConfigButton);
   reports_button_ =
-      create(L"BUTTON", L"Reports", BS_PUSHBUTTON, kReportsButton);
+      create_window(L"BUTTON", L"Reports", BS_PUSHBUTTON, kReportsButton);
   artifacts_button_ =
-      create(L"BUTTON", L"Artifacts", BS_PUSHBUTTON, kArtifactsButton);
-  pdk_edit_ = create(WC_COMBOBOXW, L"sky130A",
-                     WS_BORDER | CBS_DROPDOWN | WS_VSCROLL, kPdkCombo);
-  scl_edit_ = create(WC_COMBOBOXW, L"sky130_fd_sc_hd",
-                     WS_BORDER | CBS_DROPDOWN | WS_VSCROLL, kSclCombo);
-  clocks_edit_ = create(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 0);
-  period_edit_ = create(L"EDIT", L"10.0", WS_BORDER | ES_AUTOHSCROLL, 0);
+      create_window(L"BUTTON", L"Artifacts", BS_PUSHBUTTON, kArtifactsButton);
+  pdk_edit_ = create_window(WC_COMBOBOXW, L"sky130A",
+                            WS_BORDER | CBS_DROPDOWN | WS_VSCROLL, kPdkCombo);
+  scl_edit_ = create_window(WC_COMBOBOXW, L"sky130_fd_sc_hd",
+                            WS_BORDER | CBS_DROPDOWN | WS_VSCROLL, kSclCombo);
+  clocks_edit_ = create_window(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 0);
+  period_edit_ = create_window(L"EDIT", L"10.0", WS_BORDER | ES_AUTOHSCROLL, 0);
   utilization_edit_ =
-      create(L"EDIT", L"40", WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL, 0);
-  density_edit_ = create(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 0);
-  die_area_edit_ = create(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 0);
-  pnr_sdc_combo_ = create(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL, 0);
+      create_window(L"EDIT", L"40", WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL, 0);
+  density_edit_ = create_window(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 0);
+  die_area_edit_ = create_window(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 0);
+  pnr_sdc_combo_ =
+      create_window(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL, 0);
   signoff_sdc_combo_ =
-      create(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL, 0);
+      create_window(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL, 0);
   advanced_edit_ =
-      create(L"EDIT", L"{}",
-             WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, 0);
-  stages_list_ = create(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL, 0);
-  page_tabs_ = create(WC_TABCONTROLW, L"", WS_TABSTOP, kPageTabs);
+      create_window(L"EDIT", L"{}",
+                    WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, 0);
+  stages_list_ = create_window(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL, 0);
+  page_tabs_ = create_window(WC_TABCONTROLW, L"", WS_TABSTOP | WS_CLIPSIBLINGS,
+                             kPageTabs);
   for (const wchar_t* label : {L"Summary", L"Verification", L"Runs"}) {
     TCITEMW item{};
     item.mask = TCIF_TEXT;
     item.pszText = const_cast<wchar_t*>(label);
     TabCtrl_InsertItem(page_tabs_, TabCtrl_GetItemCount(page_tabs_), &item);
   }
-  summary_ = create(L"EDIT", L"No compatible layout result",
+  page_host_ = create_window(L"STATIC", L"", SS_LEFT | WS_CLIPCHILDREN, 0);
+  summary_ = create(page_host_, L"EDIT", L"No compatible layout result",
                     WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL, 0);
   runs_list_ = create(
-      WC_LISTVIEWW, L"",
+      page_host_, WC_LISTVIEWW, L"",
       WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, kRunsList);
   ListView_SetExtendedListViewStyle(runs_list_, LVS_EX_FULLROWSELECT |
                                                     LVS_EX_GRIDLINES |
@@ -1281,16 +1254,19 @@ bool LayoutWindowImplementation::CreateControls() {
   AddColumn(runs_list_, 1, 95, L"Status");
   AddColumn(runs_list_, 2, 190, L"Run ID");
   verification_source_ =
-      create(L"STATIC", L"Select a final Layout Run to verify", SS_LEFT, 0);
-  drc_button_ = create(L"BUTTON", L"Run DRC", BS_PUSHBUTTON, kDrcButton);
-  lvs_button_ = create(L"BUTTON", L"Run LVS", BS_PUSHBUTTON, kLvsButton);
-  verify_all_button_ =
-      create(L"BUTTON", L"Run All Checks", BS_PUSHBUTTON, kVerifyAllButton);
+      create(page_host_, L"STATIC", L"Select a final Layout Run to verify",
+             SS_LEFT, 0);
+  drc_button_ =
+      create(page_host_, L"BUTTON", L"Run DRC", BS_PUSHBUTTON, kDrcButton);
+  lvs_button_ =
+      create(page_host_, L"BUTTON", L"Run LVS", BS_PUSHBUTTON, kLvsButton);
+  verify_all_button_ = create(page_host_, L"BUTTON", L"Run All Checks",
+                              BS_PUSHBUTTON, kVerifyAllButton);
   verification_cancel_button_ =
-      create(L"BUTTON", L"Cancel Verification", BS_PUSHBUTTON,
+      create(page_host_, L"BUTTON", L"Cancel Verification", BS_PUSHBUTTON,
              kVerificationCancelButton);
   verification_list_ =
-      create(WC_LISTVIEWW, L"",
+      create(page_host_, WC_LISTVIEWW, L"",
              WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0);
   ListView_SetExtendedListViewStyle(
       verification_list_,
@@ -1301,12 +1277,12 @@ bool LayoutWindowImplementation::CreateControls() {
   AddColumn(verification_list_, 3, 100, L"Violations");
   AddColumn(verification_list_, 4, 190, L"Source Run");
   verification_detail_ = create(
-      L"EDIT", L"No physical verification result",
+      page_host_, L"EDIT", L"No physical verification result",
       WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 0);
-  output_ = create(
+  output_ = create_window(
       L"EDIT", L"",
       WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 0);
-  status_ = create(L"STATIC", L"Loading layout state...", SS_LEFT, 0);
+  status_ = create_window(L"STATIC", L"Loading layout state...", SS_LEFT, 0);
   EnableWindow(cancel_button_, FALSE);
   EnableWindow(resume_button_, FALSE);
   EnableWindow(verification_cancel_button_, FALSE);
@@ -1326,8 +1302,8 @@ bool LayoutWindowImplementation::CreateControls() {
          artifacts_button_ && pdk_edit_ && scl_edit_ && clocks_edit_ &&
          period_edit_ && utilization_edit_ && density_edit_ && die_area_edit_ &&
          pnr_sdc_combo_ && signoff_sdc_combo_ && advanced_edit_ &&
-         stages_list_ && page_tabs_ && summary_ && runs_list_ && output_ &&
-         status_ && verification_source_ && verification_list_ &&
+         stages_list_ && page_tabs_ && page_host_ && summary_ && runs_list_ &&
+         output_ && status_ && verification_source_ && verification_list_ &&
          verification_detail_ && drc_button_ && lvs_button_ &&
          verify_all_button_ && verification_cancel_button_;
 }
@@ -1349,35 +1325,36 @@ void LayoutWindowImplementation::LayoutControls(int width, int height) {
     x += button_width + gap;
   }
   const int bottom = height - px(28);
-  MoveWindow(page_tabs_, px(8), header, width - px(16), bottom - header, TRUE);
-  RECT page{px(18), header + px(34), width - px(18), bottom - px(10)};
+  const int tab_width = std::max(1, width - px(16));
+  const int tab_height = std::max(1, bottom - header);
+  MoveWindow(page_tabs_, px(8), header, tab_width, tab_height, TRUE);
+  RECT page{0, 0, tab_width, tab_height};
+  TabCtrl_AdjustRect(page_tabs_, FALSE, &page);
+  const int page_width = std::max(1, static_cast<int>(page.right - page.left));
+  const int page_height = std::max(1, static_cast<int>(page.bottom - page.top));
+  MoveWindow(page_host_, px(8) + page.left, header + page.top, page_width,
+             page_height, TRUE);
   if (selected_page_ == 0) {
-    MoveWindow(summary_, page.left, page.top, page.right - page.left,
-               page.bottom - page.top, TRUE);
+    MoveWindow(summary_, 0, 0, page_width, page_height, TRUE);
   } else if (selected_page_ == 2) {
-    MoveWindow(runs_list_, page.left, page.top, page.right - page.left,
-               page.bottom - page.top, TRUE);
+    MoveWindow(runs_list_, 0, 0, page_width, page_height, TRUE);
   } else {
     const int verification_button_width = px(130);
-    MoveWindow(verification_source_, page.left, page.top,
-               page.right - page.left, px(24), TRUE);
-    int button_x = page.left;
+    MoveWindow(verification_source_, 0, 0, page_width, px(24), TRUE);
+    int button_x = 0;
     for (HWND button : {drc_button_, lvs_button_, verify_all_button_,
                         verification_cancel_button_}) {
-      MoveWindow(button, button_x, page.top + px(28), verification_button_width,
-                 px(30), TRUE);
+      MoveWindow(button, button_x, px(28), verification_button_width, px(30),
+                 TRUE);
       button_x += verification_button_width + gap;
     }
-    const int list_top = page.top + px(64);
-    const int page_bottom = static_cast<int>(page.bottom);
-    const int page_width = static_cast<int>(page.right - page.left);
-    const int list_height = std::max(px(120), (page_bottom - list_top) / 2);
-    MoveWindow(verification_list_, page.left, list_top, page_width, list_height,
-               TRUE);
-    MoveWindow(verification_detail_, page.left, list_top + list_height + gap,
+    const int list_top = px(64);
+    const int available_height = std::max(1, page_height - list_top - gap);
+    const int list_height = std::max(1, available_height / 2);
+    MoveWindow(verification_list_, 0, list_top, page_width, list_height, TRUE);
+    MoveWindow(verification_detail_, 0, list_top + list_height + gap,
                page_width,
-               std::max(px(70), page_bottom - list_top - list_height - gap),
-               TRUE);
+               std::max(1, page_height - list_top - list_height - gap), TRUE);
   }
   MoveWindow(status_, 0, height - px(22), width, px(22), TRUE);
 }
@@ -1676,7 +1653,7 @@ void LayoutWindowImplementation::HandleEvents() {
     }
     if (event.viewer.completed || !event.viewer.output.empty()) {
       if (!event.viewer.output.empty() && central_log_) {
-        central_log_(Utf8ToWide(event.viewer.output));
+        AppendCentralLog(L"Layout Viewer", Utf8ToWide(event.viewer.output));
       }
       if (event.viewer.completed)
         SetControlText(status_, event.viewer.status.message);
@@ -1685,7 +1662,8 @@ void LayoutWindowImplementation::HandleEvents() {
     if (event.openroad_viewer.completed ||
         !event.openroad_viewer.output.empty()) {
       if (!event.openroad_viewer.output.empty() && central_log_) {
-        central_log_(Utf8ToWide(event.openroad_viewer.output));
+        AppendCentralLog(L"OpenROAD Viewer",
+                         Utf8ToWide(event.openroad_viewer.output));
       }
       if (event.openroad_viewer.completed) {
         SetControlText(status_, event.openroad_viewer.status.message);
@@ -1719,7 +1697,7 @@ void LayoutWindowImplementation::HandleEvents() {
       if (!complete_output.empty()) {
         const std::wstring display_output = Utf8ToWide(complete_output);
         AppendOutput(display_output);
-        if (central_log_) central_log_(display_output);
+        AppendCentralLog(L"Physical Flow", display_output);
       }
     } else if (flow.kind ==
                application::PhysicalImplementationEventKind::kProgress) {
@@ -1741,12 +1719,20 @@ void LayoutWindowImplementation::HandleEvents() {
                application::PhysicalImplementationEventKind::kCompleted) {
       if (!flow_output_utf8_remainder_.empty()) {
         AppendOutput(L"[truncated UTF-8 output]");
-        if (central_log_) central_log_(L"[truncated UTF-8 output]");
+        AppendCentralLog(L"Physical Flow", L"[truncated UTF-8 output]");
         flow_output_utf8_remainder_.clear();
       }
       active_run_ = flow.run;
       metrics_ = flow.metrics;
       ApplyState(flow.state);
+      std::wstring completion = flow.status.Ok() ? L"Completed" : L"Failed";
+      if (!flow.failure_stage.empty()) {
+        completion += L" [" + Utf8ToWide(flow.failure_stage) + L"]";
+      }
+      if (!flow.status.message.empty()) {
+        completion += L": " + Utf8ToWide(flow.status.message);
+      }
+      AppendCentralLog(L"Physical Flow", completion + L"\r\n");
       std::wostringstream summary;
       summary
           << L"Layout Summary\r\n\r\n"
@@ -2032,14 +2018,15 @@ void LayoutWindowImplementation::StartPreparedRun(bool resume,
   if (environment.Ok()) {
     run_request.environment_id = environment.Value().installation_id;
     run_request.environment_fingerprint = environment.Value().fingerprint;
-  } else {
-    const std::string root =
-        provider_id == "orfs" ? profile_.orfs_root : profile_.openlane_root;
-    auto custom_fingerprint = application::CalculateSha256(
-        "custom:" + profile_.id + ":" + provider_id + ":" + root);
+  } else if (environment.GetStatus().code == core::ErrorCode::kNotFound) {
     run_request.environment_id = "custom." + profile_.id + "." + provider_id;
-    run_request.environment_fingerprint =
-        custom_fingerprint.Ok() ? custom_fingerprint.Value() : root;
+    // A path hash is not compatibility evidence. The service must probe this
+    // custom environment and capture its validated fingerprint before
+    // execution.
+  } else {
+    SetControlText(status_, environment.GetStatus().message);
+    ApplyState(application::ManagedFlowRunState::kFailed);
+    return;
   }
   run_request.generation = generation_;
   run_request.target_stage = target_stage;
@@ -2126,6 +2113,14 @@ void LayoutWindowImplementation::AppendOutput(std::wstring_view text) {
                reinterpret_cast<LPARAM>(std::wstring(text).c_str()));
 }
 
+void LayoutWindowImplementation::AppendCentralLog(
+    std::wstring_view category, std::wstring_view text) const {
+  if (!central_log_ || text.empty()) return;
+  const std::wstring prefix =
+      L"[" + std::wstring(category) + L" " + Utf8ToWide(cell_name_) + L"] ";
+  central_log_(prefix + std::wstring(text));
+}
+
 void LayoutWindowImplementation::MergeCompletedRun(
     const std::shared_ptr<application::RunRecord>& completed_run) {
   if (!completed_run) return;
@@ -2201,15 +2196,25 @@ void LayoutWindowImplementation::SelectPage(int index) {
 
 void LayoutWindowImplementation::PopulateVerification() {
   verification_recipes_ =
-      document_ ? BuiltinVerificationRecipes(document_->project, profile_)
+      document_ ? BuiltinVerificationRecipes(document_->project, profile_,
+                                             active_run_.get())
                 : std::vector<core::VerificationRecipe>{};
   if (document_) {
-    const std::string backend =
-        document_->project.physical_implementation.backend_id;
-    const std::string platform =
+    std::string backend = document_->project.physical_implementation.backend_id;
+    std::string platform =
         backend == "orfs"
             ? document_->project.physical_implementation.orfs.platform
             : document_->project.physical_implementation.pdk;
+    if (active_run_) {
+      if (const auto run_backend =
+              RunSummaryString(*active_run_, "backend_id")) {
+        if (!run_backend->empty()) backend = *run_backend;
+      }
+      if (const auto run_platform =
+              RunSummaryString(*active_run_, "platform")) {
+        if (!run_platform->empty()) platform = *run_platform;
+      }
+    }
     for (const core::VerificationRecipe& recipe :
          toolchain_settings_.verification_recipes) {
       if ((recipe.provider_id.empty() || recipe.provider_id == backend) &&
@@ -2238,9 +2243,10 @@ void LayoutWindowImplementation::PopulateVerification() {
       passed = JsonBool(summary, "passed");
     }
     const bool stale = active_run_ && run.source_run_id != active_run_->id;
-    const bool has_violations = run.status == application::RunStatus::kFailed &&
-                                parsed.value_or(false) &&
-                                !passed.value_or(true);
+    const bool has_violations =
+        run.status == application::RunStatus::kViolated ||
+        (run.status == application::RunStatus::kFailed &&
+         parsed.value_or(false) && !passed.value_or(true));
     std::wstring values[] = {
         Utf8ToWide(check), Utf8ToWide(recipe),
         stale            ? L"Stale"
@@ -2315,18 +2321,12 @@ void LayoutWindowImplementation::PopulateVerification() {
           : L"Select a Run with a complete final GDS";
   SetWindowTextW(verification_source_, source.c_str());
   if (source_ready && !lvs_ready) {
-    if (lvs_recipe == nullptr &&
-        document_->project.physical_implementation.backend_id == "orfs" &&
-        document_->project.physical_implementation.orfs.platform == "asap7") {
-      SetWindowTextW(
-          verification_detail_,
-          L"LVS is unavailable for ORFS ASAP7: no validated LVS recipe is "
-          L"registered. DRC results remain available.");
-    } else if (lvs_recipe == nullptr) {
+    if (lvs_recipe == nullptr) {
       SetWindowTextW(
           verification_detail_,
           L"LVS is unavailable because no compatible trusted rule is "
-          L"registered for this backend/platform.");
+          L"registered for this backend/platform. KLayout LVS requires a "
+          L"compatible extraction recipe and cell models, not Calibre.");
     } else if (lvs_requires_spice && odb.empty()) {
       SetWindowTextW(
           verification_detail_,
@@ -2383,7 +2383,8 @@ void LayoutWindowImplementation::StartVerification(
   request.schematic_path =
       recipe->engine == "klayout_lvs"
           ? std::filesystem::path{}
-          : FindNetlist(*active_run_, check == adapters::VerificationCheck::kLvs);
+          : FindNetlist(*active_run_,
+                        check == adapters::VerificationCheck::kLvs);
   request.extracted_path = FindNetlist(*active_run_, true);
   request.environment_id = active_run_->environment_id;
   request.environment_fingerprint = active_run_->environment_fingerprint;
@@ -2419,7 +2420,7 @@ void LayoutWindowImplementation::StartVerification(
 void LayoutWindowImplementation::ApplyVerificationEvent(
     const application::PhysicalVerificationEvent& event) {
   if (!event.output.empty() && central_log_) {
-    central_log_(Utf8ToWide(event.output));
+    AppendCentralLog(L"Physical Verification", Utf8ToWide(event.output));
   }
   if (!event.completed) {
     EnableWindow(drc_button_, FALSE);
@@ -2427,12 +2428,17 @@ void LayoutWindowImplementation::ApplyVerificationEvent(
     EnableWindow(verify_all_button_, FALSE);
     EnableWindow(verification_cancel_button_, TRUE);
     const wchar_t* message = L"Physical verification is running...";
-    if (event.state == application::PhysicalVerificationState::kCdlGenerating) {
+    if (event.state ==
+        application::PhysicalVerificationState::kCdlModelValidating) {
+      message = L"Validating the platform cell CDL model...";
+    } else if (event.state ==
+               application::PhysicalVerificationState::kCdlGenerating) {
       message = L"Generating design CDL from the final ODB...";
     } else if (event.state ==
                application::PhysicalVerificationState::kCdlCombining) {
       message = L"Combining the design CDL with the platform cell model...";
-    } else if (event.state == application::PhysicalVerificationState::kRunning) {
+    } else if (event.state ==
+               application::PhysicalVerificationState::kRunning) {
       message = L"Running LVS...";
     }
     SetWindowTextW(verification_detail_, message);

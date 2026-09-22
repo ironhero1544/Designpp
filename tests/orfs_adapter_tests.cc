@@ -82,15 +82,19 @@ TEST_METHOD(PlatformDiscoveryFiltersAndClassifiesContracts) {
   Assert::IsTrue(command.arguments[1].find(L"flow/platforms") !=
                  std::wstring::npos);
   const auto parsed = adapter.ParsePlatformDiscovery(
-      "common|ready|\nsky130hd|ready|\nnangate45|unavailable|missing "
-      "config.mk\n"
-      ".hidden|ready|\n");
+      "common|ready|no|no|\nsky130hd|ready|yes|yes|\n"
+      "nangate45|unavailable|no|no|missing config.mk\n"
+      ".hidden|ready|no|no|\n");
   Assert::IsTrue(parsed.Ok());
   Assert::AreEqual(std::size_t(2), parsed.Value().size());
   Assert::AreEqual(std::string("nangate45"), parsed.Value()[0].name);
   Assert::IsFalse(parsed.Value()[0].runnable);
+  Assert::IsFalse(parsed.Value()[0].drc_ready);
+  Assert::IsFalse(parsed.Value()[0].lvs_ready);
   Assert::AreEqual(std::string("sky130hd"), parsed.Value()[1].name);
   Assert::IsTrue(parsed.Value()[1].runnable);
+  Assert::IsTrue(parsed.Value()[1].drc_ready);
+  Assert::IsTrue(parsed.Value()[1].lvs_ready);
 }
 
 TEST_METHOD(OrfsFlakeExecutionDoesNotReuseOpenLaneShellOrDryRunMake) {

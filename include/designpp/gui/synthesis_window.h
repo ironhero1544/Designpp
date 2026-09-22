@@ -70,6 +70,7 @@ class SynthesisWindow final : public ViewWindow {
   void PopulateSynthesisConfiguration();
   void StartSynthesis();
   void ApplyState(application::SynthesisRunState state);
+  void AppendCentralLog(std::wstring_view text) const;
   void AppendOutput(std::wstring_view text);
   void ShowProblems();
   void ShowRuns();

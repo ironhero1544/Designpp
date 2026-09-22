@@ -13,6 +13,8 @@
 #include <set>
 #include <sstream>
 
+#include "designpp/adapters/toolchain_compatibility_probe.h"
+
 namespace designpp::adapters {
 namespace {
 
@@ -516,13 +518,13 @@ runtime::WslCommand OpenLane2Adapter::BuildProbeCommand(
       L"root=\"$1\"; case \"$root\" in '~/'*) "
       L"root=\"$HOME/${root#\\~/}\";; esac; "
       L". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh "
-      L"2>/dev/null || true; cd \"$root\"; "
+      L"2>/dev/null || true; cd \"$root\" || exit 44; "
       L"nix-shell shell.nix --run 'openlane --version'",
       L"designpp-openlane-probe", Utf8ToWide(profile.openlane_root)};
   if (!profile.wsl_distribution.empty()) {
     command.distribution = Utf8ToWide(profile.wsl_distribution);
   }
-  return command;
+  return WithToolchainCompatibilityEvidence(std::move(command), "openlane2");
 }
 
 core::Status OpenLane2Adapter::ValidateAdvancedOverrides(

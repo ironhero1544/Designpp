@@ -1,5 +1,148 @@
 # Design++ 제작 계획
 
+## Cell-scoped PDK manager
+
+Tools > PDK management opens a separate resizable window pinned to the selected
+Cell. It reuses installed OpenLane PDK/SCL and ORFS platform discovery; applying
+changes only that Cell's technology fields, retaining inactive backend settings.
+ProjectService writer leases and revision checks reject concurrent changes.
+Discovery and persistence run outside the UI thread; late events are discarded
+through a per-window channel. Profile path editing uses Toolchain Doctor.
+Each discovered ORFS platform is also checked for its native rule/model files
+and intersected with the versioned managed-recipe registry. The manager reports
+DRC and LVS readiness independently. An installable platform is not presented as
+verification-capable merely because its flow configuration exists. In the
+currently supported registry, `sky130hd` has managed DRC and LVS, `asap7` has
+managed DRC only, and other ORFS platforms remain unavailable for independent
+verification until a validated recipe is registered. OpenLane entries expose
+flow-collected verification results only; they are not advertised as independent
+recipes.
+This slice does not add arbitrary PDK downloads, deletion, or global defaults.
+
+## 2026-09-20 PDK and verification stabilization
+
+PDK discovery now starts and replaces WSL processes on the bounded PDK worker,
+while the Win32 thread only drains generation-tagged results. Closing the window
+invalidates its channel and queues discovery cancellation, so late output cannot
+reach a reused window. A successful Cell save refreshes open workspace windows;
+the revision-checked PDK update can participate in a writer lease already held
+by a window in the same process, while ordinary editor opens remain exclusive.
+Stale revision, read-only, and external-modification failures retain their
+distinct diagnostics.
+
+Physical verification assigns every probe, preparation, and engine process a
+monotonic invocation ID. This closes the synchronous-completion race where a
+completed probe could return its handle after the next process had started and
+overwrite that active handle. Duplicate and stale callbacks are rejected before
+state advancement, and handle destruction remains on the cleanup worker.
+
+The Debug and Release suites each passed 279/279 tests. The two
+callback-lifetime tests passed 20 bounded repetitions. The installed sky130hd
+KLayout DRC recipe completed against the unchanged source GDS and wrote a new
+temporary report database. Production-service sky130hd LVS Run
+`a0012bd3-bcc8-472d-8c9c-dd3d8038de4d` passed against unchanged source Run
+`f2f58d34-64c5-4552-bf06-770c649fd3cf` with top `timer_1s`. A deliberately
+incorrect top produced failed Run `5d8216f9-70d6-474f-b58e-2a8670433a2a`,
+confirming that missing generated-CDL top evidence cannot pass. Windows UI input
+automation was unavailable because its local runtime could not initialize. The
+manual PDK-window click-through was completed on 2026-09-21, including Apply
+while the target Layout held the project writer lease. The selection persisted
+without the previous read-only failure, so the PDK management UI slice is
+accepted.
+
+The same manual run verified ASAP7 PDK integration through the engine rather
+than by file presence alone. Yosys/ABC mapped the design with the ASAP7 7.5-track
+AO, INVBUF, OA, SIMPLE, and SEQ Liberty sets. OpenROAD loaded the platform LEF
+and `setRC.tcl`, completed `2_3_floorplan_tapcell`, and wrote the corresponding
+ODB. A later M6 width/spacing violation demonstrates that the ASAP7 technology
+rules were active; it is a design/configuration outcome for this test and does
+not invalidate PDK discovery, loading, or mapping. This evidence qualifies ASAP7
+installation and ORFS flow execution. It does not enable ASAP7 LVS, which remains
+disabled until a compatible extraction and comparison recipe is validated.
+
+## ASAP7 reference model preparation (2026-09-14)
+
+Tool Check offers a separate optional ASAP7 CDL models installer. ORFS and full
+setup also prepare it, without modifying the ORFS platform or rebuilding tools.
+Official `asap7sc7p5t_28` commit
+`472f7b3f6680ffb1109d6792219e6ea5570c26a0` supplies R/L/SL/SRAM cell CDL and
+LICENSE. Each file has a pinned SHA-256. A cross-process lock and candidate
+directory protect publication under `$HOME/.designpp/models/asap7sc7p5t_28/`.
+Inventory checks these hashes locally without downloading. Damaged packages are
+retained and reported, not silently overwritten. This supplies reference cell
+models, not a validated KLayout FinFET extraction recipe or LVS capability.
+
+## 2026-09-14 Calibre inventory
+
+KLayout verification does not require Calibre or its deck. Calibre-specific
+ASAP7 guidance was removed; missing-recipe UI is platform-neutral. The ORFS
+platform itself has no `.lylvs`, CDL, or SPICE model files; the separate model
+installer above now supplies official CDL outside that checkout. The community
+ASAP7_for_KLayout repository lists DRC but no LVS implementation despite its
+README mentioning an lvs directory. A working ASAP7 KLayout extraction/model
+contract is still required; removing guidance is not implementation of that
+contract and must not enable an unverified PASS path.
+
+The optional Calibre inventory entry and version probe have been removed at
+the user's request. Existing external installations are not changed. Tool Check
+retains KLayout and the independent ASAP7 CDL model preparation entry.
+
+## 2026-09-12 LVS pin extraction correction
+
+Source Run `f2f58d34-64c5-4552-bf06-770c649fd3cf` reproduces the missing
+`clk/start/done` ports. Each label lies on its pin-purpose polygon, which overlaps
+the routing-purpose polygon away from the label. The installed LVS rule declared
+PIN layers but did not connect them. A rule-derived conductor/PIN/TXT connection
+restores all four signal ports without name insertion or supply aliasing. The
+original GDS and installed rule are unchanged. Evidence is in
+`artifacts/lvs-investigation/` (local, ignored diagnostic output).
+
+The initial native database had five mismatches and a skipped top comparison.
+On 2026-09-14 the hash-bound `sky130hd-bulk-v1` recipe replaced the asymmetric
+simplification and empty synthetic substrate input with symmetric simplification
+and boundary-minus-nwell extraction. No supply alias or cell-name exclusion is
+introduced. Production service verification Run
+`b0dce129-8039-433b-bbf1-345c10f27317` matched all 29 circuit pairs, including
+the six-port top, using the unchanged source Layout. Before/after snapshots show
+34/29 circuits and 342/226 extracted devices, versus 226/226 schematic devices.
+
+Local real-engine fixtures also cover a differently named inverter design
+(match), signal short/open, supply short, and tap-contact removal (not PASS).
+Deep-well, missing boundary, and altered rule hash are rejected before extraction.
+The transformations and expected outcomes now live in the opt-in
+`tests/fixtures/sky130hd_lvs` engine fixture. It accepts immutable external
+GDS/CDL/rule/production-driver inputs and creates every clean or fault variant in
+a new UUID directory under WSL `/tmp`; installed PDK data and source Runs are not
+modified. An opt-in production-service test also accepts source Cell/Run/top via
+environment variables. Wider immutable environment resolution, dependency
+closure, and UI detail remain pending.
+
+The fixture was executed on 2026-09-21 in isolated directory
+`/tmp/designpp-sky130hd-lvs-4c2f3f3f-dc6a-4f4e-8c6a-3487eda55452` against the
+unchanged Timer source. The clean control reported 29 circuit pairs, zero
+mismatches, and zero skipped comparisons. Signal short/open reported 21/28
+mismatches, supply short reported one mismatch, and tap-contact removal reported
+one mismatch. Deep-well, missing-boundary, and altered-rule-hash variants were
+rejected before a summary could be produced. These results are comparison
+evidence, not inference from process exit codes.
+
+The companion `tests/fixtures/sky130hd_drc` fixture runs the installed rule
+against a clean control and an isolated narrow-met1 mutation. It requires a
+nonempty native marker database in both cases, zero items for the control, and
+at least one item for the mutation. The 2026-09-21 execution in
+`/tmp/designpp-sky130hd-drc-06b075fe-bc84-4d20-bb71-472995c46a67` reported zero
+items for the unchanged Timer GDS and 18 items for the narrow-met1 copy. RunStore
+regression coverage now recreates the store after completion and verifies
+restoration of source Run, environment identity and fingerprint, result state,
+artifact input hashes, summary path, and raw log.
+
+Final rerun evidence: production verification Run
+`2121137c-356c-47e1-88b1-cbf3fa542657` passed on the latest driver. Debug suite
+passed 273/273 including that opt-in service execution (TRX
+`TestResults/Tlqkf_IRONHERO_2026-09-14_09_24_10_net40.trx`). Standard x64
+Debug/Release builds and `git diff --check` passed. Fault-fixture coverage above
+is local real-engine evidence, not a completed reusable regression suite.
+
 ## Tool Check 검증 현황 (2026-09-07)
 
 2026-09-08 Tool Check 수정: managed 환경 inventory가 모든 기존 checkout에
@@ -336,7 +479,7 @@ run별 manifest를 사용한다. 프로젝트가 커져 검색 성능 문제가 
 Synopsys 제품은 용어와 작업 흐름의 참고 대상으로만 사용한다. 아이콘, 자산,
 화면 배치나 proprietary database를 그대로 복제하지 않는다.
 
-## 10. Synopsys 프로젝트 가져오기
+## 10. 외부 설계 파일 정책
 
 ### 우선 지원 형식
 
@@ -361,15 +504,9 @@ Synopsys 제품은 용어와 작업 흐름의 참고 대상으로만 사용한�
 이 형식들은 사용자가 portable format으로 export하거나 정식 vendor API/변환
 도구를 사용할 수 있을 때만 연결한다.
 
-Import Wizard 단계:
-
-1. 소스와 file list 분석
-2. top module 후보 탐색
-3. include/define/library 매핑
-4. SDC 명령 호환성 검사
-5. PDK/library 연결
-6. 미지원 옵션과 파일 형식 보고
-7. `.dpproj` 생성
+Design++ Library의 기존 파일 추가·관리 경계를 통해 portable 형식만
+가져온다. 특정 상용 도구의 프로젝트 구조, 데이터베이스 또는 전용 import
+wizard는 제품 범위에 포함하지 않는다.
 
 ## 11. 단계별 개발 로드맵
 
@@ -653,6 +790,11 @@ View에서 compatible GDS 상태를 확인하고 KLayout으로 열 수 있다.
 
 ### Phase 8 — 물리 검증 및 Layout 확장
 
+**상태: 완료 (2026-09-21).** 최종 GDS 기반 DRC/LVS 결과, 원본 report와
+진단 보존, PDK 선택·저장, 실행 취소·종료, 재시작 복원 및 GUI 창 수명 회귀를
+검증했다. x64 Debug 전체 280개 테스트와 x64 Debug/Release 빌드, 관련 Release
+GUI 테스트 10개가 통과했다.
+
 - [구현] ToolchainSettings v3의 활성·롤백 환경 참조, 설치 환경 inventory와
   사용자/managed verification recipe registry
 - [구현] Run manifest v4의 source Run, 실제 environment ID와 fingerprint
@@ -662,28 +804,73 @@ View에서 compatible GDS 상태를 확인하고 KLayout으로 열 수 있다.
   cancellation, raw log, input hash manifest와 원본 report 보존
 - [구현] KLayout DRC/LVS, Magic DRC, Netgen LVS adapter 및 빈/malformed 결과의
   PASS 방지
+- [구현] ORFS sky130hd LVS 입력 준비: 동일 최종 ODB의 OpenROAD CDL export,
+  플랫폼 셀 모델 snapshot·결합·구조 검증, verification Run별 artifact 보존
+- [과거 조사 기록, 2026-09-12] Timer CDL의 X-instance `/` 구분자와 저항 `short`
+  문법 변환 후 KLayout에서 438개 circuit 읽기 및 실제 LVS 비교 완료.
+  비교 결과는 `Netlists don't match`이며 LVS 통과를 의미하지 않는다.
+- [구현] verification 입력 manifest/summary schema v3, source Run 기반 managed
+  recipe resolver, KLayout LVS 비교 로그 전용 parser, `Violated` Run 상태.
+  Timer final ODB에는 clk/done/rst_n/start/VSS/VDD BTerm과 BPin이 모두 존재해
+  후속 원인은 GDS-to-LVS port 추출 계약으로 제한된다.
 - [구현] Layout의 Summary/Verification/Runs 탭, DRC/LVS/전체 검증, 현재 GDS와
   다른 source Run 결과의 Stale 표시
-- [진행] DEF/LEF 및 marker 선택을 KLayout 위치 탐색으로 연결
-- [진행] OpenLane sky130A Magic 추출+Netgen 기본 recipe와 사용자 recipe 신뢰
-  등록 UI
-- [검증 필요] 현재 Timer/ASAP7 및 sky130hd/nangate45 실제 규칙 회귀. ASAP7
-  LVS는 호환 recipe 등록 전 비활성 상태를 유지한다.
+- [후속 범위] DEF/LEF 및 marker 선택을 KLayout 위치 탐색으로 연결
+- [후속 범위] OpenLane sky130A 독립 Magic 추출+Netgen recipe와 사용자 recipe
+  신뢰 등록 UI. 현재 OpenLane은 flow에서 수집한 검증 결과만 표시한다.
+- [부분 검증, 2026-09-21] ASAP7 PDK를 실제 ORFS 실행으로 확인했다. 7.5-track
+  Liberty 매핑, platform LEF/RC 로드, tapcell 단계와 ODB 저장이 성공했다. 이후
+  M6 width/spacing 위반은 PDK 연결 판정과 분리한다. sky130hd LVS의 clean,
+  signal short/open, supply short, tap-contact 제거, substrate preflight 사례는
+  opt-in engine fixture로 정리했다. nangate45 실제 규칙 회귀는 독립 검증
+  recipe가 없어 미지원 상태이며, ASAP7 LVS도 호환 recipe 등록 전 비활성
+  상태를 유지한다.
 
 완료 기준: 최종 GDS를 열고 DRC/LVS pass/fail과 원본 report 및 상세 오류를
 확인할 수 있으며, 실제 환경 회귀와 Debug/Release gate가 모두 통과해야 한다.
 
-### Phase 9 — Import와 안정화
+### Phase 9 — 릴리스 안정화
 
-- Synopsys portable project import wizard
-- app/run crash recovery
-- 설정 migration
-- 로그 검색과 export
-- run 비교와 QoR comparison
-- Release build와 배포 패키지
-- 사용자 문서 및 예제 프로젝트
+Phase 9의 주 목표는 OpenLane 2·ORFS의 변동하는 버전과 명령 계약을 중앙에서
+관리하고 검증된 환경을 선택·롤백한 뒤 Windows 앱을 배포하는 것이다.
+
+- [구현] `ToolchainCompatibilityCatalog`의 고정 framework/dependency revision,
+  명령 계약, 필수 기능과 회귀 fixture 연결
+- [구현] ToolchainSettings schema v4의 계약·revision·lock 증거와 이전 schema의
+  검증 상태 무효화 migration
+- [구현] 준비·등록·활성화 분리, 동일 환경 재활성화 무변경 처리, fresh probe를
+  요구하는 rollback과 settings revision 경합 거부
+- [구현] flow 실행 직전 중앙 계약 probe, 환경 fingerprint 변경 및 호환되지
+  않는 checkpoint 재사용 거부
+- [철회] backtick 디버거 제거 (2026-09-22 사용자 요청). WSL 직접 실행 복원.
+- [구현] x64 배포 ZIP, manifest, SHA-256 생성 스크립트와 설치·복구 문서
+- [검증] 고정 revision의 OpenLane 2 tiny Classic flow와 ORFS 명령 단위·fixture를
+  실제 WSL 환경에서 실행하고 계약 probe 및 결과 수집을 확인
+- [검증 필요] 개발 도구가 없는 Windows 환경의 압축 해제·실행·재시작 검증
+
+로그 검색·QoR 비교와 일반적인 app/run crash recovery 확장은 후속 범위다.
 
 ## 12. 릴리스 목표
+
+### 2026-09-22 디버거 회귀 수정 검증 (롤백 이전 기록)
+
+이 기능은 사용자 요청으로 이후 롤백했다. 아래 디버거 테스트 기록은
+현재 지원 기능을 뜻하지 않는다. 롤백 후 WSL 직접 실행 경로의 실제
+ASAP7 합성은 `TestResults/Tlqkf_IRONHERO_2026-09-22_08_57_53_net40.trx`
+에서 통과했다. 사용자 NMOS/Timer 작업의 복구 검증은 별도로 남아 있다.
+
+- Library Manager의 backtick은 실행 중 Workspace를 조회하며, 여러 작업이면
+  대상 창을 선택한다. 실행별 private tmux 서버와 foreground child Bash로
+  환경 격리 및 정지 중 조기 완료 방지를 구현했다.
+- 실제 WSL 출력·종료 상태, 환경·작업 디렉터리, Ctrl+Z/fg 회귀 3건 통과:
+  `TestResults/Tlqkf_IRONHERO_2026-09-22_08_43_08_net40.trx`.
+- Release에서 위 3건과 실제 ASAP7 합성/ODB 생성 포함 4건 통과:
+  `TestResults/Tlqkf_IRONHERO_2026-09-22_08_44_30_net40.trx`.
+- Debug 전체 runner 결과 285/285:
+  `TestResults/Tlqkf_IRONHERO_2026-09-22_08_43_54_net40.trx`.
+  환경 변수로 opt-in하는 실제 LVS 항목의 조기 반환은 실제 엔진 통과가 아니다.
+- 사용자 NMOS/Timer에서 probe 뒤 멈춘 정확한 원인과 실제 GUI attach 조작은
+  아직 미검증이다. Layout 완료·실패 사유를 중앙 로그에도 남기도록 보완했다.
 
 | 버전 | 목표 |
 |---|---|
@@ -695,7 +882,7 @@ View에서 compatible GDS 상태를 확인하고 KLayout으로 열 수 있다.
 | v0.5 | Yosys와 OpenSTA |
 | v0.7 | OpenLane 2 Full Flow |
 | v0.8 | ORFS 단계별 Physical Design |
-| v0.9 | KLayout, Magic, Netgen, Import Wizard |
+| v0.9 | KLayout, Magic, Netgen 물리 검증 |
 | v1.0 | 복구, run 비교, 문서, 배포 안정화 |
 
 ## 13. 테스트 전략

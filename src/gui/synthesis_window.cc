@@ -290,6 +290,8 @@ LRESULT SynthesisWindow::HandleMessage(UINT message, WPARAM wparam,
           ShowProblems();
         } else if (selected == 1) {
           ShowRuns();
+        } else {
+          ShowReports();
         }
         return 0;
       }
@@ -377,7 +379,7 @@ bool SynthesisWindow::CreateControls() {
   bottom_tabs_ =
       CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
                       window_, nullptr, instance_, nullptr);
-  for (const wchar_t* title : {L"Problems", L"Runs", L"Output"}) {
+  for (const wchar_t* title : {L"Problems", L"Runs", L"Report"}) {
     TCITEMW item{};
     item.mask = TCIF_TEXT;
     item.pszText = const_cast<wchar_t*>(title);
@@ -686,7 +688,7 @@ void SynthesisWindow::HandleEvents() {
     }
     application::SynthesisRunEvent& synthesis = event.synthesis;
     if (synthesis.kind == application::SynthesisRunEventKind::kOutput) {
-      AppendOutput(Utf8ToWide(synthesis.output));
+      AppendCentralLog(Utf8ToWide(synthesis.output));
     } else if (synthesis.kind ==
                application::SynthesisRunEventKind::kStateChanged) {
       ApplyState(synthesis.state);
@@ -735,10 +737,11 @@ void SynthesisWindow::HandleEvents() {
       ApplyState(display_state);
       UpdateCanvas();
       if (!synthesis.status.Ok()) {
-        AppendOutput(L"\r\n[Synthesis] " +
-                     Utf8ToWide(synthesis.status.message) + L"\r\n");
+        AppendCentralLog(L"Failed: " + Utf8ToWide(synthesis.status.message) +
+                         L"\r\n");
         ShowProblems();
       } else {
+        AppendCentralLog(L"Completed successfully\r\n");
         ShowReports();
       }
     }
@@ -836,6 +839,7 @@ void SynthesisWindow::StartSynthesis() {
   request.cell_directory =
       library_.directory / L"cells" / Utf8ToWide(request_.cell_id);
   request.generation = generation_;
+  AppendCentralLog(L"Started\r\n");
   const auto channel = event_channel_;
   const std::uint64_t generation = generation_;
   const core::Status started = synthesis_service_.Start(
@@ -858,6 +862,8 @@ void SynthesisWindow::StartSynthesis() {
       });
   if (!started.Ok()) {
     SetWindowTextW(status_, Utf8ToWide(started.message).c_str());
+    AppendCentralLog(L"Could not start: " + Utf8ToWide(started.message) +
+                     L"\r\n");
   }
 }
 
@@ -884,6 +890,14 @@ void SynthesisWindow::ApplyState(application::SynthesisRunState state) {
       : state == application::SynthesisRunState::kFailed ? L"Synthesis failed"
                                                          : L"Synthesis ready";
   SetWindowTextW(status_, text);
+}
+
+void SynthesisWindow::AppendCentralLog(std::wstring_view text) const {
+  if (!central_log_ || text.empty()) return;
+  const core::Cell* cell = FindCell(library_, request_.cell_id);
+  const std::wstring prefix =
+      cell ? L"[Synthesis " + Utf8ToWide(cell->name) + L"] " : L"[Synthesis] ";
+  central_log_(prefix + std::wstring(text));
 }
 
 void SynthesisWindow::AppendOutput(std::wstring_view text) {

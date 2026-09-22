@@ -15,6 +15,8 @@
 #include <set>
 #include <sstream>
 
+#include "designpp/adapters/toolchain_compatibility_probe.h"
+
 namespace designpp::adapters {
 namespace {
 
@@ -745,30 +747,38 @@ runtime::WslCommand OrfsAdapter::BuildProbeCommand(
   if (!profile.wsl_distribution.empty()) {
     command.distribution = Utf8ToWide(profile.wsl_distribution);
   }
-  return command;
+  return WithToolchainCompatibilityEvidence(std::move(command), "orfs");
 }
 
 runtime::WslCommand OrfsAdapter::BuildPlatformDiscoveryCommand(
     const core::ToolchainProfile& profile) const {
   runtime::WslCommand command;
   command.program = L"/bin/bash";
-  command.arguments = {L"-lc",
-                       L"root=\"$1\"; case \"$root\" in '~/'*) "
-                       L"root=\"$HOME/${root#\\~/}\";; esac; "
-                       L"platforms=\"$root/flow/platforms\"; "
-                       L"if [ ! -d \"$platforms\" ]; then exit 44; fi; "
-                       L"for platform in \"$platforms\"/*; do "
-                       L"[ -d \"$platform\" ] || continue; "
-                       L"name=\"${platform##*/}\"; "
-                       L"case \"$name\" in common|.git|.*) continue;; esac; "
-                       L"if [ -f \"$platform/config.mk\" ] || "
-                       L"[ -f \"$platform/Makefile\" ]; then "
-                       L"printf '%s|ready|\\n' \"$name\"; "
-                       L"else printf '%s|unavailable|missing config.mk or "
-                       L"Makefile\\n' \"$name\"; fi; "
-                       L"done",
-                       L"designpp-orfs-platforms",
-                       Utf8ToWide(profile.orfs_root)};
+  command.arguments = {
+      L"-lc",
+      L"root=\"$1\"; case \"$root\" in '~/'*) "
+      L"root=\"$HOME/${root#\\~/}\";; esac; "
+      L"platforms=\"$root/flow/platforms\"; "
+      L"if [ ! -d \"$platforms\" ]; then exit 44; fi; "
+      L"for platform in \"$platforms\"/*; do "
+      L"[ -d \"$platform\" ] || continue; "
+      L"name=\"${platform##*/}\"; "
+      L"case \"$name\" in common|.git|.*) continue;; esac; "
+      L"if [ -f \"$platform/config.mk\" ] || "
+      L"[ -f \"$platform/Makefile\" ]; then "
+      L"drc=no; lvs=no; "
+      L"test -s \"$platform/drc/$name.lydrc\" && drc=yes; "
+      L"test -s \"$platform/lvs/$name.lylvs\" && "
+      L"find \"$platform\" -maxdepth 3 -type f "
+      L"\\( -iname '*.cdl' -o -iname '*.spice' -o "
+      L"-iname '*.sp' \\) -print -quit 2>/dev/null | "
+      L"grep -q . && lvs=yes; "
+      L"printf '%s|ready|%s|%s|\\n' \"$name\" \"$drc\" "
+      L"\"$lvs\"; "
+      L"else printf '%s|unavailable|no|no|missing config.mk or "
+      L"Makefile\\n' \"$name\"; fi; "
+      L"done",
+      L"designpp-orfs-platforms", Utf8ToWide(profile.orfs_root)};
   if (!profile.wsl_distribution.empty()) {
     command.distribution = Utf8ToWide(profile.wsl_distribution);
   }
@@ -788,10 +798,21 @@ OrfsAdapter::ParsePlatformDiscovery(std::string_view output) const {
     if (first == std::string::npos || second == std::string::npos) continue;
     const std::string name(line.substr(0, first));
     if (!IsIdentifier(name) || name == "common") continue;
+    const std::size_t third = line.find('|', second + 1);
+    const std::size_t fourth = third == std::string::npos
+                                   ? std::string::npos
+                                   : line.find('|', third + 1);
     OrfsPlatformCandidate candidate;
     candidate.name = name;
     candidate.runnable = line.substr(first + 1, second - first - 1) == "ready";
-    candidate.reason = line.substr(second + 1);
+    if (third != std::string::npos && fourth != std::string::npos) {
+      candidate.drc_ready =
+          line.substr(second + 1, third - second - 1) == "yes";
+      candidate.lvs_ready = line.substr(third + 1, fourth - third - 1) == "yes";
+      candidate.reason = line.substr(fourth + 1);
+    } else {
+      candidate.reason = line.substr(second + 1);
+    }
     candidates.push_back(std::move(candidate));
   }
   std::sort(candidates.begin(), candidates.end(),

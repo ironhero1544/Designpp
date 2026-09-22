@@ -17,6 +17,7 @@
 #include "designpp/application/physical_implementation_service.h"
 #include "designpp/application/prepared_physical_inputs.h"
 #include "designpp/application/synthesis_fingerprint.h"
+#include "designpp/application/toolchain_environment_service.h"
 #include "designpp/runtime/path_mapper.h"
 #include "designpp/runtime/resource_coordinator.h"
 #include "designpp/runtime/task_scheduler.h"
@@ -592,15 +593,34 @@ struct OrfsManagedFlowRunService::Implementation final
                                     ManagedFlowRunState::kProbing)) {
             return;
           }
-          if (!result.started || result.cancelled || result.exit_code != 0 ||
-              result.output.find("DESIGNPP_ORFS_READY") == std::string::npos) {
+          const auto compatibility =
+              ProbeToolchainCompatibility("orfs", result);
+          if (!compatibility.Ok()) {
             self->Finish(
                 result.cancelled ? core::Status{core::ErrorCode::kCancelled,
                                                 "ORFS probe cancelled", 0}
-                                 : core::Status{core::ErrorCode::kNotFound,
-                                                ProbeFailureMessage(result), 0},
+                                 : compatibility.GetStatus(),
                 std::move(result), {}, {}, "capability_probe", "ORFS-PROBE");
             return;
+          }
+          if (!self->request.environment_fingerprint.empty() &&
+              self->request.environment_fingerprint !=
+                  compatibility.Value().environment_fingerprint) {
+            self->Finish(
+                {core::ErrorCode::kExternalModification,
+                 "Selected ORFS environment changed; recheck it in Tool Check",
+                 0},
+                std::move(result), {}, {}, "capability_probe", "ORFS-PROBE");
+            return;
+          }
+          self->request.environment_fingerprint =
+              compatibility.Value().environment_fingerprint;
+          if (self->request.environment_id.empty()) {
+            self->request.environment_id = compatibility.Value().bundle_id;
+          }
+          {
+            std::scoped_lock lock(self->mutex);
+            self->probe_output = result.output;
           }
           self->tool_version = ProbeVersion(result.output);
           self->tool_mode = ProbeToolMode(result.output);

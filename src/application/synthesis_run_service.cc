@@ -215,13 +215,14 @@ struct SynthesisRunService::Implementation final
       Finish(started.status, {}, nullptr, {}, {}, {});
       return;
     }
-    bool cancel = false;
+    std::shared_ptr<runtime::ExecutionHandle> handle_to_cancel;
     {
       std::scoped_lock lock(mutex);
-      handle = std::move(started.handle);
-      cancel = cancellation_requested;
+      handle =
+          std::shared_ptr<runtime::ExecutionHandle>(std::move(started.handle));
+      if (cancellation_requested) handle_to_cancel = handle;
     }
-    if (cancel && handle != nullptr) handle->Cancel();
+    if (handle_to_cancel != nullptr) handle_to_cancel->Cancel();
   }
 
   void Prepare(std::uint64_t generation, std::string tool_version,
@@ -408,13 +409,14 @@ struct SynthesisRunService::Implementation final
       CompleteFailedRun(executing_run, started.status);
       return;
     }
-    bool cancel = false;
+    std::shared_ptr<runtime::ExecutionHandle> handle_to_cancel;
     {
       std::scoped_lock lock(mutex);
-      handle = std::move(started.handle);
-      cancel = cancellation_requested;
+      handle =
+          std::shared_ptr<runtime::ExecutionHandle>(std::move(started.handle));
+      if (cancellation_requested) handle_to_cancel = handle;
     }
-    if (cancel && handle != nullptr) handle->Cancel();
+    if (handle_to_cancel != nullptr) handle_to_cancel->Cancel();
   }
 
   void Finalize(std::uint64_t generation, runtime::ProcessResult result,
@@ -637,7 +639,7 @@ struct SynthesisRunService::Implementation final
   SynthesisRunRequest request;
   SynthesisRunEventSink sink;
   SynthesisRunState state = SynthesisRunState::kIdle;
-  std::unique_ptr<runtime::ExecutionHandle> handle;
+  std::shared_ptr<runtime::ExecutionHandle> handle;
   std::unique_ptr<runtime::CpuTokenLease> cpu_lease;
   std::shared_ptr<RunRecord> run;
   adapters::SynthesisPlan plan;
@@ -703,14 +705,14 @@ core::Status SynthesisRunService::Start(SynthesisRunRequest request,
 void SynthesisRunService::Cancel() noexcept {
   const std::shared_ptr<Implementation> implementation = implementation_;
   if (implementation == nullptr) return;
-  runtime::ExecutionHandle* handle = nullptr;
+  std::shared_ptr<runtime::ExecutionHandle> handle;
   {
     std::scoped_lock lock(implementation->mutex);
     if (!implementation->active || implementation->terminal_delivered) return;
     implementation->cancellation_requested = true;
     implementation->operation_stop_source.request_stop();
     implementation->state = SynthesisRunState::kCancelling;
-    handle = implementation->handle.get();
+    handle = implementation->handle;
   }
   implementation->EmitState(SynthesisRunState::kCancelling);
   if (handle != nullptr) handle->Cancel();
@@ -719,14 +721,14 @@ void SynthesisRunService::Cancel() noexcept {
 void SynthesisRunService::Shutdown() noexcept {
   const std::shared_ptr<Implementation> implementation = implementation_;
   if (implementation == nullptr) return;
-  runtime::ExecutionHandle* handle = nullptr;
+  std::shared_ptr<runtime::ExecutionHandle> handle;
   {
     std::scoped_lock lock(implementation->mutex);
     if (implementation->shutdown) return;
     implementation->shutdown = true;
     implementation->active = false;
     implementation->operation_stop_source.request_stop();
-    handle = implementation->handle.get();
+    handle = implementation->handle;
   }
   if (handle != nullptr) handle->Cancel();
   implementation->scheduler.RequestStop();

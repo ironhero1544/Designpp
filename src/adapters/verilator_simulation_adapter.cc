@@ -150,10 +150,11 @@ core::Result<SimulationPlan> VerilatorSimulationAdapter::BuildPlan(
 
   plan.compile.program = L"verilator";
   plan.compile.working_directory = working_directory.Value();
-  plan.compile.arguments = {
-      L"--binary",          L"--timing", L"--Wno-fatal",
-      L"-Wno-DECLFILENAME", L"--top-module", Utf8ToWide(selected_top),
-      L"--Mdir",            object.Value(), L"-o", binary.Value()};
+  plan.compile.arguments = {L"--binary",     L"--timing",
+                            L"--Wno-fatal",  L"-Wno-DECLFILENAME",
+                            L"--top-module", Utf8ToWide(selected_top),
+                            L"--Mdir",       object.Value(),
+                            L"-o",           binary.Value()};
   if (request.waveform_format == "fst") {
     plan.compile.arguments.push_back(L"--trace-fst");
   } else if (request.waveform_format == "vcd") {

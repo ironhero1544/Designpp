@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -85,6 +86,10 @@ class TemporarySynthesisWorkspace final {
 
 struct FakeExecutionState {
   std::atomic_bool cancelled = false;
+  std::atomic_bool handle_returned = false;
+  std::atomic_bool callback_entered = false;
+  std::atomic_bool callback_exited = false;
+  std::atomic_bool destroyed = false;
   std::atomic<DWORD> completion_callback_thread_id = 0;
   std::atomic_bool destroyed_during_completion_callback = false;
 };
@@ -95,6 +100,7 @@ class ControlledExecutionHandle final : public runtime::ExecutionHandle {
       : state_(std::move(state)) {}
 
   ~ControlledExecutionHandle() override {
+    state_->destroyed = true;
     if (state_->completion_callback_thread_id.load() == GetCurrentThreadId()) {
       state_->destroyed_during_completion_callback = true;
     }
@@ -125,18 +131,39 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
       const runtime::WslCommand& command,
       runtime::ExecutionOutputCallback output,
       runtime::ExecutionCompletionCallback complete) override {
-    std::scoped_lock lock(mutex_);
-    if (fail_next_start_) {
-      fail_next_start_ = false;
-      return {nullptr,
-              {core::ErrorCode::kIoError, "Controlled start failure", 5}};
+    std::shared_ptr<FakeExecutionState> state;
+    std::optional<runtime::ProcessResult> synchronous_result;
+    runtime::ExecutionCompletionCallback synchronous_callback;
+    {
+      std::scoped_lock lock(mutex_);
+      if (fail_next_start_) {
+        fail_next_start_ = false;
+        return {nullptr,
+                {core::ErrorCode::kIoError, "Controlled start failure", 5}};
+      }
+      state = std::make_shared<FakeExecutionState>();
+      pending_.push_back(
+          {command, std::move(output), std::move(complete), state});
+      if (complete_next_start_.has_value()) {
+        synchronous_result = std::move(complete_next_start_);
+        complete_next_start_.reset();
+        synchronous_callback = pending_.back().complete;
+      }
+      changed_.notify_all();
     }
-    auto state = std::make_shared<FakeExecutionState>();
-    pending_.push_back(
-        {command, std::move(output), std::move(complete), state});
+    if (synchronous_result.has_value()) {
+      InvokeCompletion(state, synchronous_callback,
+                       std::move(*synchronous_result));
+    }
+    state->handle_returned = true;
     changed_.notify_all();
     return {std::make_unique<ControlledExecutionHandle>(state),
             core::Status::Success()};
+  }
+
+  void CompleteNextStartSynchronously(runtime::ProcessResult result) {
+    std::scoped_lock lock(mutex_);
+    complete_next_start_ = std::move(result);
   }
 
   void FailNextStart() {
@@ -171,6 +198,29 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
     return pending_.at(index).state->destroyed_during_completion_callback;
   }
 
+  [[nodiscard]] bool HandleReturned(std::size_t index) const {
+    std::scoped_lock lock(mutex_);
+    return pending_.at(index).state->handle_returned;
+  }
+
+  [[nodiscard]] bool WaitForHandleReturned(std::size_t index) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, std::chrono::seconds(5), [&] {
+      return index < pending_.size() &&
+             pending_[index].state->handle_returned.load();
+    });
+  }
+
+  [[nodiscard]] bool CallbackExited(std::size_t index) const {
+    std::scoped_lock lock(mutex_);
+    return pending_.at(index).state->callback_exited;
+  }
+
+  [[nodiscard]] bool Destroyed(std::size_t index) const {
+    std::scoped_lock lock(mutex_);
+    return pending_.at(index).state->destroyed;
+  }
+
   void Output(std::size_t index, std::string output) {
     runtime::ExecutionOutputCallback callback;
     {
@@ -193,16 +243,26 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
         std::scoped_lock lock(mutex_);
         state = pending_.at(index).state;
       }
-      state->completion_callback_thread_id = GetCurrentThreadId();
-      callback(result);
-      state->completion_callback_thread_id = 0;
+      InvokeCompletion(state, callback, result);
     }
   }
 
  private:
+  static void InvokeCompletion(
+      const std::shared_ptr<FakeExecutionState>& state,
+      const runtime::ExecutionCompletionCallback& callback,
+      runtime::ProcessResult result) {
+    state->callback_entered = true;
+    state->completion_callback_thread_id = GetCurrentThreadId();
+    callback(std::move(result));
+    state->completion_callback_thread_id = 0;
+    state->callback_exited = true;
+  }
+
   mutable std::mutex mutex_;
   std::condition_variable changed_;
   std::vector<PendingExecution> pending_;
+  std::optional<runtime::ProcessResult> complete_next_start_;
   bool fail_next_start_ = false;
 };
 

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "variants": [
+    {"id": "clean", "minimum_violations": 0, "maximum_violations": 0},
+    {"id": "narrow_m1", "minimum_violations": 1}
+  ]
+}

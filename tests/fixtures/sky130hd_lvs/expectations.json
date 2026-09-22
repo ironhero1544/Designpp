@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "recipe_contract": "sky130hd-bulk-v1",
+  "variants": [
+    {"id": "clean", "expected": "pass"},
+    {"id": "signal_short", "expected": "mismatch"},
+    {"id": "signal_open", "expected": "mismatch"},
+    {"id": "supply_short", "expected": "mismatch"},
+    {"id": "tap_contact_removed", "expected": "mismatch"},
+    {"id": "deep_well", "expected": "preflight_rejection"},
+    {"id": "missing_boundary", "expected": "preflight_rejection"},
+    {"id": "altered_rule_hash", "expected": "preflight_rejection"}
+  ]
+}

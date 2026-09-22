@@ -4,10 +4,15 @@
 
 #include <utility>
 
+#include "designpp/core/toolchain_compatibility.h"
 #include "designpp/runtime/wsl_executor.h"
 
 namespace designpp::runtime {
 namespace {
+
+std::wstring CatalogText(std::string_view text) {
+  return std::wstring(text.begin(), text.end());
+}
 
 // The 26Q2 flake otherwise links a distribution ABC that lacks read_lib -m.
 // Keep the recipe correction explicit and apply it only to the pinned
@@ -167,6 +172,10 @@ std::vector<SetupStep> BuildWslSetupSteps() {
 }
 
 std::vector<SetupStep> BuildCompleteToolSetupSteps() {
+  const auto& openlane = *core::ToolchainCompatibilityCatalog::Find(
+      "openlane2", "openlane2-2.3.10");
+  const auto& orfs =
+      *core::ToolchainCompatibilityCatalog::Find("orfs", "orfs-26Q2");
   std::vector<SetupStep> steps;
   steps.push_back({L"APT 패키지 인덱스 업데이트",
                    MakeRootWslRequest(L"/usr/bin/apt-get", {L"update"}),
@@ -212,41 +221,48 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
 
   WslCommand openlane_install;
   openlane_install.program = L"/bin/bash";
+  // Initialize Nix explicitly; login logout hooks must not replace our status.
   openlane_install.arguments = {
-      L"-lc",
+      L"-c",
       L"set -eu; . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh "
       L"2>/dev/null || true; toolchains=\"$HOME/.designpp/toolchains\"; "
-      L"active=\"$toolchains/openlane2\"; mkdir -p \"$toolchains\"; "
-      L"exec 9>\"$toolchains/.openlane-install.lock\"; "
-      L"flock -n 9 || { echo 'Another OpenLane install is running.' >&2; "
-      L"exit 73; }; candidate=''; backup_root=''; "
-      L"cleanup() { status=$?; trap - EXIT; "
-      L"if test -n \"$candidate\" && test -e \"$candidate\"; then "
-      L"printf 'OpenLane candidate retained: %s\\n' \"$candidate\" >&2; fi; "
-      L"if test -n \"$backup_root\" && test -d \"$backup_root/openlane2\" "
-      L"&& ! test -e \"$active\"; then "
-      L"mv -- \"$backup_root/openlane2\" \"$active\"; fi; "
-      L"return $status; }; trap cleanup EXIT; "
-      L"candidate=$(mktemp -d \"$toolchains/.openlane-candidate.XXXXXX\"); "
-      L"git -C \"$candidate\" init -q; "
-      L"git -C \"$candidate\" remote add origin "
-      L"https://github.com/efabless/openlane2.git; "
-      L"git -C \"$candidate\" fetch --depth 1 origin "
-      L"b89f7866fd3d19da470220baf89d0e7804962941; "
-      L"git -C \"$candidate\" checkout --detach FETCH_HEAD; "
-      L"test \"$(git -C \"$candidate\" rev-parse HEAD)\" = "
-      L"b89f7866fd3d19da470220baf89d0e7804962941; "
-      L"nix-shell \"$candidate/shell.nix\" --run 'openlane --smoke-test'; "
-      L"printf '%s\\n' 'provider=openlane2' 'version=2.3.10' "
-      L"'commit=b89f7866fd3d19da470220baf89d0e7804962941' "
-      L">\"$candidate/.designpp-environment\"; "
-      L"backup_root=$(mktemp -d \"$toolchains/.openlane-backup.XXXXXX\"); "
-      L"if test -e \"$active\"; then "
-      L"mv -- \"$active\" \"$backup_root/openlane2\"; fi; "
-      L"mv -- \"$candidate\" \"$active\"; candidate=''; "
-      L"printf 'Previous OpenLane environment retained: %s\\n' "
-      L"\"$backup_root\"; backup_root=''; trap - EXIT; "
-      L"echo 'OpenLane 2.3.10 managed environment prepared.'"};
+      L"active=\"$toolchains/environments/" +
+          CatalogText(openlane.bundle_id) +
+          L"\"; mkdir -p \"$toolchains/environments\"; "
+          L"exec 9>\"$toolchains/.openlane-install.lock\"; "
+          L"flock -n 9 || { echo 'Another OpenLane install is running.' >&2; "
+          L"exit 73; }; test ! -e \"$active\" || { "
+          L"echo 'Environment already exists; recheck it instead of replacing "
+          L"it.'; exit 0; }; "
+          L"candidate=''; "
+          L"cleanup() { status=$?; trap - EXIT; "
+          L"if test -n \"$candidate\" && test -e \"$candidate\"; then "
+          L"printf 'OpenLane candidate retained: %s\\n' \"$candidate\" >&2; "
+          L"fi; "
+          L"return $status; }; trap cleanup EXIT; "
+          L"candidate=$(mktemp -d \"$toolchains/.openlane-candidate.XXXXXX\"); "
+          L"git -C \"$candidate\" init -q; "
+          L"git -C \"$candidate\" remote add origin "
+          L"https://github.com/efabless/openlane2.git; "
+          L"git -C \"$candidate\" fetch --depth 1 origin " +
+          CatalogText(openlane.revision) +
+          L"; "
+          L"git -C \"$candidate\" checkout --detach FETCH_HEAD; "
+          L"test \"$(git -C \"$candidate\" rev-parse HEAD)\" = " +
+          CatalogText(openlane.revision) +
+          L"; "
+          L"nix-shell \"$candidate/shell.nix\" --run 'openlane --smoke-test'; "
+          L"printf '%s\\n' 'provider=openlane2' 'version=" +
+          CatalogText(openlane.version) +
+          L"' "
+          L"'commit=" +
+          CatalogText(openlane.revision) +
+          L"' "
+          L">\"$candidate/.designpp-environment\"; "
+          L"mv -- \"$candidate\" \"$active\"; candidate=''; "
+          L"trap - EXIT; "
+          L"echo 'OpenLane environment prepared; activation is a separate "
+          L"action.'"};
   steps.push_back({L"OpenLane 2와 managed EDA toolchain 설치",
                    WslExecutor::BuildRequest(openlane_install),
                    OutputEncoding::kUtf8, false});
@@ -254,90 +270,102 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
   WslCommand orfs_install;
   orfs_install.program = L"/bin/bash";
   orfs_install.arguments = {
-      L"-lc",
+      L"-c",
       L"set -eu; . /nix/var/nix/profiles/default/etc/profile.d/"
       L"nix-daemon.sh 2>/dev/null || true; "
       L"toolchains=\"$HOME/.designpp/toolchains\"; "
-      L"active=\"$toolchains/orfs\"; mkdir -p \"$toolchains\"; "
-      L"command -v flock >/dev/null 2>&1 || { "
-      L"echo 'ORFS install requires flock.' >&2; exit 69; }; "
-      L"exec 9>\"$toolchains/.orfs-install.lock\"; "
-      L"flock -n 9 || { echo 'Another ORFS install is running.' >&2; "
-      L"exit 73; }; candidate=''; backup_root=''; "
-      L"cleanup() { status=$?; trap - EXIT; "
-      L"if test -n \"$candidate\" && test -e \"$candidate\"; then "
-      L"printf 'ORFS candidate retained: %s\\n' \"$candidate\" >&2; fi; "
-      L"if test -n \"$backup_root\" && "
-      L"test -d \"$backup_root/orfs\" && ! test -e \"$active\"; then "
-      L"mv -- \"$backup_root/orfs\" \"$active\"; fi; "
-      L"return $status; }; "
-      L"trap cleanup EXIT; "
-      L"candidate=$(mktemp -d \"$toolchains/.orfs-candidate.XXXXXX\"); "
-      L"git -C \"$candidate\" init -q; "
-      L"git -C \"$candidate\" remote add origin "
-      L"https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts; "
-      L"git -C \"$candidate\" -c fetch.recurseSubmodules=false fetch "
-      L"--depth 1 origin "
-      L"036d106273e66855cd5214d49518fd0f0df7de61; "
-      L"git -C \"$candidate\" checkout --detach FETCH_HEAD; "
-      L"test \"$(git -C \"$candidate\" rev-parse HEAD)\" = "
-      L"036d106273e66855cd5214d49518fd0f0df7de61; "
-      L"test -f \"$candidate/flow/Makefile\"; "
-      L"test -f \"$candidate/flake.nix\"; "
-      L"git -C \"$candidate\" -c fetch.recurseSubmodules=false "
-      L"submodule update --init --recursive --depth 1 -- tools/yosys "
-      L"tools/OpenROAD; "
-      L"test \"$(git -C \"$candidate/tools/OpenROAD\" rev-parse HEAD)\" = "
-      L"0e2d771c5ec38f232493c2afea738ea0200cb972; "
-      L"test \"$(git -C \"$candidate/tools/yosys\" rev-parse HEAD)\" = "
-      L"d3e297fcd479247322f83d14f42b3556db7acdfb; "
-      L"test \"$(git -C \"$candidate/tools/yosys/abc\" rev-parse HEAD)\" = "
-      L"8e401543d3ecf65e3a3631c7a271793a4d356cb0; "
-      L"mkdir -p \"$candidate/tools/eqy\"; "
-      L"git -C \"$candidate/tools/eqy\" init -q; "
-      L"git -C \"$candidate/tools/eqy\" remote add origin "
-      L"https://github.com/YosysHQ/eqy.git; "
-      L"git -C \"$candidate/tools/eqy\" fetch --depth 1 origin "
-      L"eff96db01293848b993651caa52d747f191be02e; "
-      L"git -C \"$candidate/tools/eqy\" checkout --detach FETCH_HEAD; "
-      L"test \"$(git -C \"$candidate/tools/eqy\" rev-parse HEAD)\" = "
-      L"eff96db01293848b993651caa52d747f191be02e; "
-      L"printf '%s' \"$1\" | git -C \"$candidate/tools/yosys\" "
-      L"apply --unidiff-zero -; "
-      L"printf '%s' \"$2\" | git -C \"$candidate/tools/yosys\" "
-      L"apply --unidiff-zero -; "
-      L"printf '%s' \"$3\" | git -C \"$candidate\" "
-      L"apply --unidiff-zero -; "
-      L"nix --extra-experimental-features 'nix-command flakes' develop "
-      L"\"$candidate\" --no-write-lock-file --override-input yosys "
-      L"\"git+file://$candidate/tools/yosys?submodules=1\" "
-      L"--override-input openroad "
-      L"\"git+file://$candidate/tools/OpenROAD?submodules=1\" "
-      L"--override-input eqy-src \"git+file://$candidate/tools/eqy\" "
-      L"--max-jobs 0 --builders '' --option fallback false "
-      L"--command /bin/bash -c "
-      L"'yosys -p \"help read_liberty\" 2>/dev/null | "
-      L"grep -Fq -- -unit_delay && "
-      L"yosys -p \"help stat\" 2>/dev/null | grep -Fq -- -hierarchy && "
-      L"yosys-abc -c \"read_lib -h\" 2>&1 | grep -q -- -m && "
-      L"printf \"%s\\n\" \"help repair_timing\" \"exit\" | "
-      L"openroad -no_init -exit /dev/stdin 2>&1 | grep -Fq -- -sequence && "
-      L"openroad -version && eqy --version' || { "
-      L"echo 'ORFS preparation failed. Source builds are disabled; "
-      L"inspect the Nix log for missing cache entries or validation errors. "
-      L"A source build requires separate approval. Active environment "
-      L"unchanged.' "
-      L">&2; exit 78; }; "
-      L"printf '%s\\n' 'provider=orfs' 'version=26Q2' "
-      L"'commit=036d106273e66855cd5214d49518fd0f0df7de61' "
-      L">\"$candidate/.designpp-environment\"; "
-      L"backup_root=$(mktemp -d \"$toolchains/.orfs-backup.XXXXXX\"); "
-      L"if test -e \"$active\"; then "
-      L"mv -- \"$active\" \"$backup_root/orfs\"; fi; "
-      L"mv -- \"$candidate\" \"$active\"; candidate=''; "
-      L"printf 'Previous ORFS environment retained: %s\\n' \"$backup_root\"; "
-      L"backup_root=''; trap - EXIT; "
-      L"echo 'ORFS 26Q2 managed environment prepared and validated.'",
+      L"active=\"$toolchains/environments/" +
+          CatalogText(orfs.bundle_id) +
+          L"\"; mkdir -p \"$toolchains/environments\"; "
+          L"command -v flock >/dev/null 2>&1 || { "
+          L"echo 'ORFS install requires flock.' >&2; exit 69; }; "
+          L"exec 9>\"$toolchains/.orfs-install.lock\"; "
+          L"flock -n 9 || { echo 'Another ORFS install is running.' >&2; "
+          L"exit 73; }; test ! -e \"$active\" || { "
+          L"echo 'Environment already exists; recheck it instead of replacing "
+          L"it.'; exit 0; }; "
+          L"candidate=''; "
+          L"cleanup() { status=$?; trap - EXIT; "
+          L"if test -n \"$candidate\" && test -e \"$candidate\"; then "
+          L"printf 'ORFS candidate retained: %s\\n' \"$candidate\" >&2; fi; "
+          L"return $status; }; "
+          L"trap cleanup EXIT; "
+          L"candidate=$(mktemp -d \"$toolchains/.orfs-candidate.XXXXXX\"); "
+          L"git -C \"$candidate\" init -q; "
+          L"git -C \"$candidate\" remote add origin "
+          L"https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts; "
+          L"git -C \"$candidate\" -c fetch.recurseSubmodules=false fetch "
+          L"--depth 1 origin " +
+          CatalogText(orfs.revision) +
+          L"; "
+          L"git -C \"$candidate\" checkout --detach FETCH_HEAD; "
+          L"test \"$(git -C \"$candidate\" rev-parse HEAD)\" = " +
+          CatalogText(orfs.revision) +
+          L"; "
+          L"test -f \"$candidate/flow/Makefile\"; "
+          L"test -f \"$candidate/flake.nix\"; "
+          L"git -C \"$candidate\" -c fetch.recurseSubmodules=false "
+          L"submodule update --init --recursive --depth 1 -- tools/yosys "
+          L"tools/OpenROAD; "
+          L"test \"$(git -C \"$candidate/tools/OpenROAD\" rev-parse HEAD)\" "
+          L"= " +
+          CatalogText(orfs.dependencies[0].revision) +
+          L"; "
+          L"test \"$(git -C \"$candidate/tools/yosys\" rev-parse HEAD)\" = " +
+          CatalogText(orfs.dependencies[1].revision) +
+          L"; "
+          L"test \"$(git -C \"$candidate/tools/yosys/abc\" rev-parse HEAD)\" "
+          L"= " +
+          CatalogText(orfs.dependencies[2].revision) +
+          L"; "
+          L"mkdir -p \"$candidate/tools/eqy\"; "
+          L"git -C \"$candidate/tools/eqy\" init -q; "
+          L"git -C \"$candidate/tools/eqy\" remote add origin "
+          L"https://github.com/YosysHQ/eqy.git; "
+          L"git -C \"$candidate/tools/eqy\" fetch --depth 1 origin " +
+          CatalogText(orfs.dependencies[3].revision) +
+          L"; "
+          L"git -C \"$candidate/tools/eqy\" checkout --detach FETCH_HEAD; "
+          L"test \"$(git -C \"$candidate/tools/eqy\" rev-parse HEAD)\" = " +
+          CatalogText(orfs.dependencies[3].revision) +
+          L"; "
+          L"printf '%s' \"$1\" | git -C \"$candidate/tools/yosys\" "
+          L"apply --unidiff-zero -; "
+          L"printf '%s' \"$2\" | git -C \"$candidate/tools/yosys\" "
+          L"apply --unidiff-zero -; "
+          L"printf '%s' \"$3\" | git -C \"$candidate\" "
+          L"apply --unidiff-zero -; "
+          L"nix --extra-experimental-features 'nix-command flakes' develop "
+          L"\"$candidate\" --no-write-lock-file --override-input yosys "
+          L"\"git+file://$candidate/tools/yosys?submodules=1\" "
+          L"--override-input openroad "
+          L"\"git+file://$candidate/tools/OpenROAD?submodules=1\" "
+          L"--override-input eqy-src \"git+file://$candidate/tools/eqy\" "
+          L"--max-jobs 0 --builders '' --option fallback false "
+          L"--command /bin/bash -c "
+          L"'yosys -p \"help read_liberty\" 2>/dev/null | "
+          L"grep -Fq -- -unit_delay && "
+          L"yosys -p \"help stat\" 2>/dev/null | grep -Fq -- -hierarchy && "
+          L"yosys-abc -c \"read_lib -h\" 2>&1 | grep -q -- -m && "
+          L"printf \"%s\\n\" \"help repair_timing\" \"exit\" | "
+          L"openroad -no_init -exit /dev/stdin 2>&1 | grep -Fq -- -sequence && "
+          L"openroad -version && eqy --version' || { "
+          L"echo 'ORFS preparation failed. Source builds are disabled; "
+          L"inspect the Nix log for missing cache entries or validation "
+          L"errors. "
+          L"A source build requires separate approval. Active environment "
+          L"unchanged.' "
+          L">&2; exit 78; }; "
+          L"printf '%s\\n' 'provider=orfs' 'version=" +
+          CatalogText(orfs.version) +
+          L"' "
+          L"'commit=" +
+          CatalogText(orfs.revision) +
+          L"' "
+          L">\"$candidate/.designpp-environment\"; "
+          L"mv -- \"$candidate\" \"$active\"; candidate=''; "
+          L"trap - EXIT; "
+          L"echo 'ORFS environment prepared; activation is a separate action.'",
       L"designpp-orfs-install",
       kOrfsYosysRecipePatch,
       kOrfsAbcTestRecipePatch,
@@ -346,6 +374,8 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
                    WslExecutor::BuildRequest(orfs_install),
                    OutputEncoding::kUtf8, false});
   steps.push_back(WebView2InstallStep());
+  steps.push_back({L"ASAP7 CDL models", BuildAsap7ModelRequest(true),
+                   OutputEncoding::kUtf8, false});
   return steps;
 }
 
@@ -372,7 +402,61 @@ std::vector<SetupStep> BuildCompleteToolRemoveSteps() {
   return steps;
 }
 
+ProcessRequest BuildAsap7ModelRequest(bool prepare) {
+  WslCommand command;
+  command.program = L"/bin/bash";
+  command.arguments = {L"-c",
+                       LR"script(set -eu
+revision=472f7b3f6680ffb1109d6792219e6ea5570c26a0
+root="$HOME/.designpp/models/asap7sc7p5t_28"
+destination="$root/$revision"
+verify() ( cd "$1" && printf '%s\n' "$2" | sha256sum --check --status )
+if [ "$1" = probe ]; then
+  test -d "$destination" || { echo 'ASAP7 CDL models are not installed'; exit 44; }
+  verify "$destination" "$2" || { echo 'ASAP7 CDL model hash mismatch'; exit 78; }
+  echo 'ASAP7 CDL 28.2022'; exit 0
+fi
+mkdir -p "$root"
+exec 9>"$root/.prepare.lock"
+flock -x 9
+if [ -e "$destination" ]; then
+  verify "$destination" "$2" || { echo 'Existing model package is damaged; retained for diagnosis' >&2; exit 78; }
+  echo 'ASAP7 CDL models already prepared'; exit 0
+fi
+candidate=$(mktemp -d "$root/.candidate.XXXXXXXX")
+echo "Preparing ASAP7 CDL models: $candidate"
+base="https://raw.githubusercontent.com/The-OpenROAD-Project/asap7sc7p5t_28/$revision"
+for variant in R L SL SRAM; do
+  file="asap7sc7p5t_28_$variant.cdl"
+  curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 180 "$base/CDL/LVS/$file" -o "$candidate/$file"
+done
+curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 180 "$base/LICENSE" -o "$candidate/LICENSE"
+verify "$candidate" "$2"
+printf '%s\n' "$2" > "$candidate/SHA256SUMS"
+printf 'schema_version=1\nrepository=https://github.com/The-OpenROAD-Project/asap7sc7p5t_28\ncommit=%s\nkind=cell-cdl\nlvs_recipe_validated=false\n' "$revision" > "$candidate/manifest.txt"
+mv -T -- "$candidate" "$destination"
+echo "ASAP7 CDL models prepared: $destination (LVS recipe not yet validated)"
+)script",
+                       L"designpp-asap7-models",
+                       prepare ? L"prepare" : L"probe",
+                       L"444a08c16f5a44b4ec6f64e5ad4112d0dd8ca5a3fe5da7a7644e63"
+                       L"f538bf681e  asap7sc7p5t_28_R.cdl\n"
+                       L"b600c4979ae42e0ec6b40a456f14a158229ec1f15da2585d1f6f93"
+                       L"8190d13005  asap7sc7p5t_28_L.cdl\n"
+                       L"d88ba74a3944e2708a26cf26a3c4d9ddd6babfc6e6f15b76f801ae"
+                       L"936cb05b73  asap7sc7p5t_28_SL.cdl\n"
+                       L"9a212b1a6084a0d8ad2b8b2d5a0a0cd0216bdfec7f5175e1e4f710"
+                       L"17b758189c  asap7sc7p5t_28_SRAM.cdl\n"
+                       L"6f6244fdd72b8650af453f5962d01dce947e6fcd74a391a40e2ef8"
+                       L"63069a9a59  LICENSE"};
+  return WslExecutor::BuildRequest(command);
+}
+
 std::vector<SetupStep> BuildToolInstallSteps(ToolId tool_id) {
+  if (tool_id == ToolId::kAsap7Models) {
+    return {{L"ASAP7 CDL models", BuildAsap7ModelRequest(true),
+             OutputEncoding::kUtf8, false}};
+  }
   if (tool_id == ToolId::kWebView2) {
     return {WebView2InstallStep()};
   }
@@ -414,6 +498,8 @@ std::vector<SetupStep> BuildToolInstallSteps(ToolId tool_id) {
     std::vector<SetupStep> steps;
     steps.push_back(std::move(complete[3]));
     steps.push_back(std::move(complete[5]));
+    steps.push_back({L"ASAP7 CDL models", BuildAsap7ModelRequest(true),
+                     OutputEncoding::kUtf8, false});
     return steps;
   }
   return {};
@@ -440,16 +526,11 @@ std::vector<SetupStep> BuildToolRemoveSteps(ToolId tool_id) {
              OutputEncoding::kUtf8, false}};
   }
   if (tool_id == ToolId::kOpenLane2) {
-    command.arguments = {L"-lc",
-                         L"rm -rf -- \"$HOME/.designpp/toolchains/openlane2\""};
-    return {{L"Design++ OpenLane 2 checkout 삭제",
-             WslExecutor::BuildRequest(command), OutputEncoding::kUtf8, false}};
+    // Runs may still use this environment from another window or process.
+    return {};
   }
   if (tool_id == ToolId::kOrfs) {
-    command.arguments = {L"-lc",
-                         L"rm -rf -- \"$HOME/.designpp/toolchains/orfs\""};
-    return {{L"Design++ ORFS checkout 삭제", WslExecutor::BuildRequest(command),
-             OutputEncoding::kUtf8, false}};
+    return {};
   }
   return {};
 }

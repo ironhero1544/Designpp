@@ -103,6 +103,9 @@ Status ValidateToolchainSettings(const ToolchainSettings& settings) {
         !IsSafeLinuxProfilePath(environment.root) ||
         !IsSafeLinuxProfilePath(environment.executable) ||
         environment.fingerprint.empty() ||
+        HasControlCharacter(environment.command_contract_id) ||
+        HasControlCharacter(environment.framework_revision) ||
+        HasControlCharacter(environment.lock_hash) ||
         HasControlCharacter(environment.version) ||
         HasControlCharacter(environment.fingerprint)) {
       return {ErrorCode::kInvalidArgument,
@@ -122,14 +125,21 @@ Status ValidateToolchainSettings(const ToolchainSettings& settings) {
               "Physical verification recipe is invalid", 0};
     }
   }
-  const auto environment_exists = [&environment_ids](const std::string& id) {
-    return id.empty() || environment_ids.contains(id);
+  const auto environment_exists = [&settings](const std::string& id,
+                                              std::string_view provider) {
+    return id.empty() ||
+           std::any_of(settings.environments.begin(),
+                       settings.environments.end(), [&](const auto& value) {
+                         return value.id == id && value.provider_id == provider;
+                       });
   };
   for (const ToolchainProfile& profile : settings.profiles) {
-    if (!environment_exists(profile.active_openlane_environment_id) ||
-        !environment_exists(profile.rollback_openlane_environment_id) ||
-        !environment_exists(profile.active_orfs_environment_id) ||
-        !environment_exists(profile.rollback_orfs_environment_id)) {
+    if (!environment_exists(profile.active_openlane_environment_id,
+                            "openlane2") ||
+        !environment_exists(profile.rollback_openlane_environment_id,
+                            "openlane2") ||
+        !environment_exists(profile.active_orfs_environment_id, "orfs") ||
+        !environment_exists(profile.rollback_orfs_environment_id, "orfs")) {
       return {ErrorCode::kNotFound,
               "Toolchain profile references an unknown environment", 0};
     }

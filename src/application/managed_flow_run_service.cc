@@ -15,6 +15,7 @@
 #include "designpp/adapters/managed_flow_adapter_factory.h"
 #include "designpp/application/orfs_managed_flow_run_service.h"
 #include "designpp/application/synthesis_fingerprint.h"
+#include "designpp/application/toolchain_environment_service.h"
 #include "designpp/runtime/path_mapper.h"
 #include "designpp/runtime/resource_coordinator.h"
 #include "designpp/runtime/task_scheduler.h"
@@ -363,18 +364,32 @@ struct ManagedFlowRunService::Implementation final
                                     ManagedFlowRunState::kProbing)) {
             return;
           }
-          if (!result.started || result.cancelled || result.exit_code != 0 ||
-              result.output.find("2.3.10") == std::string::npos) {
-            self->Finish(
-                result.cancelled
-                    ? core::Status{core::ErrorCode::kCancelled,
-                                   "OpenLane flow cancelled", 0}
-                    : core::Status{core::ErrorCode::kNotFound,
-                                   "OpenLane 2.3.10 capability probe failed",
-                                   0},
-                std::move(result), {});
+          const auto compatibility =
+              ProbeToolchainCompatibility("openlane2", result);
+          if (!compatibility.Ok()) {
+            self->Finish(result.cancelled
+                             ? core::Status{core::ErrorCode::kCancelled,
+                                            "OpenLane flow cancelled", 0}
+                             : compatibility.GetStatus(),
+                         std::move(result), {});
             return;
           }
+          if (!self->request.environment_fingerprint.empty() &&
+              self->request.environment_fingerprint !=
+                  compatibility.Value().environment_fingerprint) {
+            self->Finish({core::ErrorCode::kExternalModification,
+                          "Selected OpenLane environment changed; recheck it "
+                          "in Tool Check",
+                          0},
+                         std::move(result), {});
+            return;
+          }
+          self->request.environment_fingerprint =
+              compatibility.Value().environment_fingerprint;
+          if (self->request.environment_id.empty()) {
+            self->request.environment_id = compatibility.Value().bundle_id;
+          }
+          self->probe_output = result.output;
           self->tool_version = ProbeVersion(result.output);
           self->EmitState(ManagedFlowRunState::kPreparing);
           const bool queued = self->scheduler.Submit(

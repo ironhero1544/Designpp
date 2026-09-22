@@ -25,6 +25,7 @@
 #include "designpp/adapters/yosys_adapter.h"
 #include "designpp/application/synthesis_fingerprint.h"
 #include "designpp/gui/schematic_scene_builder.h"
+#include "designpp/runtime/execution_provider.h"
 #include "designpp/runtime/path_mapper.h"
 #include "designpp/runtime/wsl_executor.h"
 
@@ -75,7 +76,8 @@ runtime::ProcessResult Run(
   std::condition_variable completed;
   bool done = false;
   runtime::ProcessResult result;
-  auto launch = runtime::WslExecutor::RunAsync(
+  runtime::WslExecutionProvider provider;
+  auto launch = provider.Start(
       command, [](std::string) {},
       [&](runtime::ProcessResult value) {
         {
@@ -85,7 +87,7 @@ runtime::ProcessResult Run(
         }
         completed.notify_one();
       });
-  Assert::IsTrue(launch.IsValid());
+  Assert::IsTrue(launch.Ok());
   std::unique_lock lock(mutex);
   Assert::IsTrue(completed.wait_for(lock, timeout, [&] { return done; }));
   return result;
@@ -837,6 +839,17 @@ TEST_METHOD(InteractiveDebugAcceptsTimeAndFinish) {
   Assert::AreEqual(static_cast<std::uint32_t>(0), result.exit_code);
 }
 
+TEST_METHOD(InstalledManagedOrfsEnvironmentPassesCompatibilityProbe) {
+  core::ToolchainProfile profile;
+  profile.orfs_root = "~/.designpp/toolchains/environments/orfs-26Q2";
+  const auto result = Run(adapters::OrfsAdapter().BuildProbeCommand(profile),
+                          std::chrono::seconds(120));
+  Logger::WriteMessage(result.output.c_str());
+  Assert::AreEqual<std::uint32_t>(0, result.exit_code);
+  Assert::IsTrue(result.output.find("DESIGNPP_COMPAT_FINGERPRINT=") !=
+                 std::string::npos);
+}
+
 TEST_METHOD(CancelTerminatesLongRunningWslCommand) {
   runtime::WslCommand command;
   command.program = L"/usr/bin/sleep";
@@ -1274,6 +1287,13 @@ TEST_METHOD(OpenLaneClassicTinyFixtureProducesFinalPhysicalArtifacts) {
   ScopedDirectory directory;
   adapters::OpenLane2Adapter adapter;
   adapters::OpenLaneRequest request = WriteOpenLaneFixture(directory.path());
+  const runtime::ProcessResult probe =
+      Run(adapter.BuildProbeCommand(request.profile), std::chrono::minutes(2));
+  if (probe.exit_code != 0) Logger::WriteMessage(probe.output.c_str());
+  Assert::IsTrue(probe.started);
+  Assert::AreEqual(static_cast<std::uint32_t>(0), probe.exit_code);
+  Assert::IsTrue(probe.output.find("DESIGNPP_COMPAT_CONTRACT=") !=
+                 std::string::npos);
   auto plan = adapter.BuildPlan(request);
   Assert::IsTrue(plan.Ok());
   std::ofstream(directory.path() / L"한글 OpenLane staging" / L"config.json",

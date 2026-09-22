@@ -591,7 +591,13 @@ void ConstraintsWindow::HandleEvents() {
       SetStatus(L"Constraint file saved");
       UpdateTitle();
       if (library_changed_) library_changed_();
-      if (central_log_) central_log_(L"[Constraints] Saved managed SDC\r\n");
+      if (central_log_) {
+        const core::Cell* cell = FindCell(library_, request_.cell_id);
+        const std::wstring prefix =
+            cell ? L"[Constraints " + Utf8ToWide(cell->name) + L"] "
+                 : L"[Constraints] ";
+        central_log_(prefix + L"Saved managed SDC\r\n");
+      }
       if (close_after_save_ && dirty_documents_.empty() &&
           saving_documents_.empty()) {
         close_after_save_ = false;

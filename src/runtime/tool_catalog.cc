@@ -4,8 +4,11 @@
 
 #include <cwctype>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
+#include "designpp/core/toolchain_compatibility.h"
+#include "designpp/runtime/setup_catalog.h"
 #include "designpp/runtime/wsl_executor.h"
 
 namespace designpp::runtime {
@@ -67,12 +70,36 @@ ProcessRequest WebView2ProbeRequest() {
 
 ToolDefinition MakeManagedTool(ToolId id, std::wstring name,
                                std::wstring provider) {
+  std::string provider_id;
+  provider_id.reserve(provider.size());
+  for (const wchar_t character : provider) {
+    provider_id.push_back(static_cast<char>(character));
+  }
+  const core::ToolchainCompatibilityEntry* catalog_entry = nullptr;
+  for (const auto& entry : core::ToolchainCompatibilityCatalog::Entries()) {
+    if (entry.provider_id == provider_id) {
+      catalog_entry = &entry;
+      break;
+    }
+  }
+  if (catalog_entry == nullptr) {
+    return MakeTool(id, std::move(name), L"Managed environment inventory",
+                    L"/bin/false", {}, InstallMethod::kManagedFlow,
+                    L"Unsupported managed environment");
+  }
+  const auto widen_ascii = [](std::string_view text) {
+    return std::wstring(text.begin(), text.end());
+  };
+
   // Inventory is intentionally read-only. The completion marker is written only
   // after the explicit preparation flow has passed its capability checks.
   return MakeTool(
       id, std::move(name), L"Managed environment inventory", L"/bin/bash",
       {L"-lc",
-       L"root=\"$HOME/.designpp/toolchains/$1\"; "
+       L"root=\"$HOME/.designpp/toolchains/environments/$2\"; "
+       L"if [ ! -d \"$root\" ] && "
+       L"[ -d \"$HOME/.designpp/toolchains/$1\" ]; then "
+       L"root=\"$HOME/.designpp/toolchains/$1\"; fi; "
        L"if [ ! -d \"$root\" ]; then "
        L"printf '%s\\n' DESIGNPP_ENVIRONMENT_MISSING; exit 44; fi; "
        L"marker=\"$root/.designpp-environment\"; "
@@ -84,29 +111,17 @@ ToolDefinition MakeManagedTool(ToolId id, std::wstring name,
        L"commit=$(sed -n 's/^commit=//p' \"$marker\"); "
        L"test \"$marker_provider\" = \"$1\" || { printf '%s\\n' "
        L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; }; "
-       L"case \"$marker_provider:$version:$commit\" in "
-       L"\"$1\":*[!0-9A-Za-z._+Q-]*:*|\"$1\"::*|\"$1\":*:) "
-       L"printf '%s\\n' DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78;; "
-       L"esac; "
+       L"test \"$version\" = \"$3\" && test \"$commit\" = \"$4\" || { "
+       L"printf '%s\\n' DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; "
+       L"exit 78; }; "
        L"test \"$(git -C \"$root\" rev-parse HEAD 2>/dev/null)\" = "
        L"\"$commit\" || { printf '%s\\n' "
        L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; }; "
-       L"if [ \"$1\" = orfs ]; then "
-       L"test \"$commit\" = 036d106273e66855cd5214d49518fd0f0df7de61 "
-       L"&& test -f \"$root/flow/Makefile\" "
-       L"&& test \"$(git -C \"$root/tools/OpenROAD\" rev-parse HEAD "
-       L"2>/dev/null)\" = 0e2d771c5ec38f232493c2afea738ea0200cb972 "
-       L"&& test \"$(git -C \"$root/tools/yosys\" rev-parse HEAD "
-       L"2>/dev/null)\" = d3e297fcd479247322f83d14f42b3556db7acdfb "
-       L"&& test \"$(git -C \"$root/tools/eqy\" rev-parse HEAD "
-       L"2>/dev/null)\" = eff96db01293848b993651caa52d747f191be02e "
-       L"|| { printf '%s\\n' DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; "
-       L"exit 78; }; "
-       L"elif [ \"$1\" = openlane2 ]; then "
-       L"test -f \"$root/shell.nix\" || { printf '%s\\n' "
-       L"DESIGNPP_ENVIRONMENT_PREPARATION_REQUIRED; exit 78; }; fi; "
        L"printf 'DESIGNPP_MANAGED_VERSION=%s\\n' \"$version\"",
-       L"designpp-managed-inventory", provider},
+       L"designpp-managed-inventory", provider,
+       widen_ascii(catalog_entry->bundle_id),
+       widen_ascii(catalog_entry->version),
+       widen_ascii(catalog_entry->revision)},
       InstallMethod::kManagedFlow, L"Existing environment / unverified");
 }
 
@@ -174,6 +189,9 @@ std::wstring ParseToolVersion(ToolId id, std::wstring_view output) {
       case ToolId::kDocker:
         prefix = L"Docker version ";
         break;
+      case ToolId::kAsap7Models:
+        prefix = L"ASAP7 CDL ";
+        break;
       case ToolId::kNix:
         prefix = L"nix (Nix) ";
         break;
@@ -204,7 +222,7 @@ std::wstring ParseToolVersion(ToolId id, std::wstring_view output) {
 
 std::vector<ToolDefinition> BuildToolCatalog() {
   std::vector<ToolDefinition> tools;
-  tools.reserve(15);
+  tools.reserve(18);
   tools.push_back(MakeWindowsTool(
       ToolId::kWebView2, L"Microsoft Edge WebView2 Runtime",
       L"Monaco HDL editor host", WebView2ProbeRequest(),
@@ -250,6 +268,12 @@ std::vector<ToolDefinition> BuildToolCatalog() {
   tools.push_back(
       MakeManagedTool(ToolId::kOpenLane2, L"OpenLane 2", L"openlane2"));
   tools.push_back(MakeManagedTool(ToolId::kOrfs, L"ORFS", L"orfs"));
+  tools.push_back({ToolId::kAsap7Models, L"ASAP7 CDL models",
+                   L"Cell reference models; KLayout LVS recipe still required",
+                   BuildAsap7ModelRequest(false), InstallMethod::kManagedFlow,
+                   L"Download hash-pinned official R/L/SL/SRAM CDL models. "
+                   L"No Calibre or ORFS rebuild required.",
+                   false});
   tools.push_back(MakeTool(ToolId::kDocker, L"Docker CLI",
                            L"Container execution provider", L"docker",
                            {L"--version"}, InstallMethod::kExternal,

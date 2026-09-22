@@ -236,6 +236,8 @@ std::string_view RunStatusName(RunStatus status) noexcept {
       return "Running";
     case RunStatus::kSucceeded:
       return "Succeeded";
+    case RunStatus::kViolated:
+      return "Violated";
     case RunStatus::kFailed:
       return "Failed";
     case RunStatus::kCancelled:
@@ -386,6 +388,8 @@ core::Result<std::vector<RunRecord>> RunStore::List(
       run.status = RunStatus::kRunning;
     else if (status == "Succeeded")
       run.status = RunStatus::kSucceeded;
+    else if (status == "Violated")
+      run.status = RunStatus::kViolated;
     else if (status == "Failed")
       run.status = RunStatus::kFailed;
     else if (status == "Cancelled")

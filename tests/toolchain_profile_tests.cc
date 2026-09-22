@@ -3,6 +3,7 @@
 #include <CppUnitTest.h>
 #include <windows.h>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -14,6 +15,26 @@ using Microsoft::VisualStudio::CppUnitTestFramework::Assert;
 
 namespace designpp::tests {
 namespace {
+
+core::ToolchainCompatibilityEvidence Evidence(std::string_view provider) {
+  core::ToolchainCompatibilityEvidence result;
+  for (const auto& entry : core::ToolchainCompatibilityCatalog::Entries()) {
+    if (entry.provider_id != provider) continue;
+    result.provider_id = entry.provider_id;
+    result.bundle_id = entry.bundle_id;
+    result.framework_revision = entry.revision;
+    result.command_contract_id = entry.command_contract_id;
+    result.lock_hash = std::string(64, 'a');
+    result.environment_fingerprint = std::string(64, 'b');
+    for (const auto& dependency : entry.dependencies) {
+      result.dependency_revisions.emplace_back(dependency.name,
+                                               dependency.revision);
+    }
+    for (const auto feature : entry.required_features)
+      result.features.emplace_back(feature);
+  }
+  return result;
+}
 
 class TemporaryProfileDirectory final {
  public:
@@ -97,7 +118,8 @@ TEST_METHOD(SchemaOneMigratesWithoutRewritingDisk) {
   application::ToolchainProfileStore store(path);
   const auto loaded = store.Load();
   Assert::IsTrue(loaded.Ok());
-  Assert::AreEqual(std::uint32_t(3), loaded.Value().schema_version);
+  Assert::AreEqual(core::ToolchainSettings::kSchemaVersion,
+                   loaded.Value().schema_version);
   Assert::AreEqual(std::string("custom"),
                    loaded.Value().profiles.front().orfs_mode);
   std::ifstream input(path);
@@ -204,6 +226,80 @@ TEST_METHOD(UnknownAndMalformedSchemasAreNotSilentlyReplaced) {
   auto malformed = store.Load();
   Assert::IsFalse(malformed.Ok());
   Assert::IsTrue(malformed.GetStatus().code == core::ErrorCode::kCorruptData);
+}
+
+TEST_METHOD(CompatibilityRejectsUnknownRevisionAndMissingFeatures) {
+  auto evidence = Evidence("orfs");
+  Assert::IsTrue(core::ValidateToolchainCompatibility(evidence).Ok());
+  evidence.framework_revision = std::string(40, '0');
+  Assert::IsFalse(core::ValidateToolchainCompatibility(evidence).Ok());
+  evidence = Evidence("orfs");
+  evidence.features.pop_back();
+  Assert::IsFalse(core::ValidateToolchainCompatibility(evidence).Ok());
+  evidence = Evidence("orfs");
+  evidence.dependency_revisions.front().second = std::string(40, '0');
+  Assert::IsFalse(core::ValidateToolchainCompatibility(evidence).Ok());
+  evidence = Evidence("openlane2");
+  evidence.lock_hash.clear();
+  Assert::IsFalse(core::ValidateToolchainCompatibility(evidence).Ok());
+}
+
+TEST_METHOD(CatalogRejectsDuplicateBundlesAndInvalidContracts) {
+  const auto entries = core::ToolchainCompatibilityCatalog::Entries();
+  Assert::IsTrue(core::ToolchainCompatibilityCatalog::Validate(entries).Ok());
+  std::array copies{entries.front(), entries.front()};
+  Assert::IsFalse(core::ToolchainCompatibilityCatalog::Validate(copies).Ok());
+  copies = {entries.front(), entries.back()};
+  copies.back().command_contract_id = {};
+  Assert::IsFalse(core::ToolchainCompatibilityCatalog::Validate(copies).Ok());
+}
+
+TEST_METHOD(PlainVersionAndDuplicateEvidenceCannotPassProbe) {
+  runtime::ProcessResult process;
+  process.started = true;
+  process.exit_code = 0;
+  process.output = "OpenLane v2.3.10\n";
+  Assert::IsFalse(
+      application::ProbeToolchainCompatibility("openlane2", process).Ok());
+  process.output = "DESIGNPP_COMPAT_SCHEMA=1\nDESIGNPP_COMPAT_SCHEMA=1\n";
+  Assert::IsFalse(
+      application::ProbeToolchainCompatibility("openlane2", process).Ok());
+}
+
+TEST_METHOD(RegistrationAndReactivationPreserveActiveAndRollback) {
+  TemporaryProfileDirectory directory;
+  application::ToolchainProfileStore store(directory.SettingsPath());
+  application::ToolchainPreparationService service(&store);
+  application::ToolchainAdoptionRequest request;
+  request.profile_id = "default";
+  request.evidence = Evidence("orfs");
+  request.environment.id = "first";
+  request.environment.provider_id = "orfs";
+  request.environment.bundle_id = request.evidence.bundle_id;
+  request.environment.root = "/home/test/first";
+  request.environment.executable = "/home/test/first/openroad";
+  request.environment.version = "26Q2";
+  request.environment.fingerprint = request.evidence.environment_fingerprint;
+  Assert::IsTrue(service.Register(request).Ok());
+  auto registered = store.Load();
+  Assert::IsTrue(registered.Ok());
+  Assert::IsTrue(
+      registered.Value().profiles.front().active_orfs_environment_id.empty());
+  Assert::IsTrue(service.Adopt(request).Ok());
+  request.environment.id = "second";
+  request.environment.root = "/home/test/second";
+  request.environment.executable = "/home/test/second/openroad";
+  Assert::IsTrue(service.Adopt(request).Ok());
+  const auto before = store.Load();
+  Assert::IsTrue(before.Ok());
+  Assert::IsTrue(service.Adopt(request).Ok());
+  const auto after = store.Load();
+  Assert::IsTrue(after.Ok());
+  Assert::AreEqual(before.Value().revision, after.Value().revision);
+  Assert::AreEqual(std::string("first"),
+                   after.Value().profiles.front().rollback_orfs_environment_id);
+  request.environment.root = "/home/test/replaced";
+  Assert::IsFalse(service.Adopt(request).Ok());
 }
 }
 ;

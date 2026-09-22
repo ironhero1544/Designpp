@@ -70,6 +70,8 @@
     <ClCompile Include="src\application\library_service.cc" />
     <ClCompile Include="src\application\managed_source_service.cc" />
     <ClCompile Include="src\application\project_service.cc" />
+    <ClCompile Include="src\application\pdk_selection_service.cc" />
+    <ClCompile Include="tests\pdk_selection_tests.cc" />
     <ClCompile Include="src\application\recent_workspace_store.cc" />
     <ClCompile Include="src\application\cocotb_run_finalizer.cc" />
     <ClCompile Include="src\application\run_store.cc" />
@@ -106,6 +108,8 @@
     <ClCompile Include="src\core\project.cc" />
     <ClCompile Include="src\application\layout_setup_draft.cc" />
     <ClCompile Include="src\core\toolchain_profile.cc" />
+    <ClCompile Include="src\core\toolchain_compatibility.cc" />
+    <ClCompile Include="src\adapters\toolchain_compatibility_probe.cc" />
     <ClCompile Include="src\application\toolchain_profile_store.cc" />
     <ClCompile Include="src\application\toolchain_environment_service.cc" />
     <ClCompile Include="src\application\toolchain_doctor_service.cc" />

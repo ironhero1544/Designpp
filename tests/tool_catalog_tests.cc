@@ -30,6 +30,32 @@ std::wstring JoinArguments(const std::vector<std::wstring>& arguments) {
 // clang-format off
 TEST_CLASS(ToolCatalogTests) {
  public:
+  TEST_METHOD(ManagedInstallStatusDoesNotDependOnLoginLogoutHooks) {
+    for (const auto tool : {runtime::ToolId::kOpenLane2,
+                            runtime::ToolId::kOrfs}) {
+      bool found = false;
+      for (const auto& step : runtime::BuildToolInstallSteps(tool)) {
+        const auto& args = step.request.arguments;
+        const auto bash = std::find(args.begin(), args.end(), L"/bin/bash");
+        if (JoinArguments(args).find(L"Environment already exists") ==
+            std::wstring::npos) continue;
+        Assert::IsTrue(bash != args.end() && bash + 1 != args.end());
+        Assert::AreEqual(std::wstring(L"-c"), *(bash + 1));
+        Assert::IsTrue(JoinArguments(args).find(L"nix-daemon.sh") !=
+                       std::wstring::npos);
+        found = true;
+      }
+      Assert::IsTrue(found);
+    }
+  }
+
+  TEST_METHOD(CalibreIsNotListedOrProbed) {
+    const auto tools = runtime::BuildToolCatalog();
+    for (const auto& tool : tools) {
+      Assert::IsTrue(tool.display_name.find(L"Calibre") == std::wstring::npos);
+      Assert::IsTrue(JoinArguments(tool.probe_request.arguments).find(L"calibre") == std::wstring::npos);
+    }
+  }
   TEST_METHOD(VersionParserSkipsWarningsAndRejectsProgress) {
     Assert::AreEqual(std::wstring(L"0.68+post"), runtime::ParseToolVersion(
         runtime::ToolId::kYosys, L"warning: not writing lock file\nYosys 0.68+post (git sha1 abc)\n"));
@@ -56,6 +82,11 @@ TEST_CLASS(ToolCatalogTests) {
         ++openroad_rows;
         Assert::IsTrue(command.find(L"DESIGNPP_ENVIRONMENT_MISSING") != std::wstring::npos);
         Assert::IsTrue(command.find(L".designpp-environment") !=
+                       std::wstring::npos);
+        Assert::IsTrue(command.find(L"toolchains/environments/") !=
+                       std::wstring::npos);
+        Assert::IsTrue(command.find(
+                           L"0e2d771c5ec38f232493c2afea738ea0200cb972") ==
                        std::wstring::npos);
       }
     }
@@ -93,14 +124,15 @@ TEST_CLASS(ToolCatalogTests) {
   TEST_METHOD(OrfsInstallPreparesCheckoutCompatibleFlakeTools) {
     const std::vector<runtime::SetupStep> install =
         runtime::BuildToolInstallSteps(runtime::ToolId::kOrfs);
-    Assert::AreEqual(static_cast<std::size_t>(2), install.size());
+    Assert::AreEqual(static_cast<std::size_t>(3), install.size());
     const std::wstring nix_command =
         JoinArguments(install[0].request.arguments);
     Assert::IsTrue(nix_command.find(L"install.determinate.systems") !=
                    std::wstring::npos);
     const std::wstring command = JoinArguments(install[1].request.arguments);
     Assert::IsTrue(command.find(L"nix-command flakes") != std::wstring::npos);
-    Assert::IsTrue(command.find(L"toolchains/orfs") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"toolchains/environments/orfs-26Q2") !=
+                   std::wstring::npos);
     Assert::IsTrue(command.find(L"--branch") == std::wstring::npos);
     Assert::IsTrue(command.find(L"036d106273e66855cd5214d49518fd0f0df7de61") != std::wstring::npos);
     Assert::IsTrue(command.find(L"0e2d771c5ec38f232493c2afea738ea0200cb972") != std::wstring::npos);
@@ -110,7 +142,9 @@ TEST_CLASS(ToolCatalogTests) {
     Assert::IsTrue(command.find(L"Source builds are disabled") != std::wstring::npos);
     Assert::IsTrue(command.find(L".orfs-candidate.XXXXXX") !=
                    std::wstring::npos);
-    Assert::IsTrue(command.find(L".orfs-backup.XXXXXX") !=
+    Assert::IsTrue(command.find(L".orfs-backup.XXXXXX") ==
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"activation is a separate action") !=
                    std::wstring::npos);
     Assert::IsTrue(command.find(L".orfs-install.lock") !=
                    std::wstring::npos);
@@ -144,13 +178,28 @@ TEST_CLASS(ToolCatalogTests) {
                    std::wstring::npos);
   }
 
+  TEST_METHOD(Asap7ModelsArePinnedAndSeparateFromFlowInstallation) {
+    const auto install = runtime::BuildToolInstallSteps(runtime::ToolId::kAsap7Models);
+    Assert::AreEqual(std::size_t(1), install.size());
+    const auto command = JoinArguments(install.front().request.arguments);
+    Assert::IsTrue(command.find(L"472f7b3f6680ffb1109d6792219e6ea5570c26a0") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"sha256sum --check --status") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"flock -x") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"nix develop") == std::wstring::npos);
+    Assert::IsTrue(command.find(L"rm -rf") == std::wstring::npos);
+    const auto probe = runtime::BuildAsap7ModelRequest(false);
+    Assert::IsTrue(std::find(probe.arguments.begin(), probe.arguments.end(), L"probe") != probe.arguments.end());
+    Assert::IsTrue(runtime::BuildToolRemoveSteps(runtime::ToolId::kAsap7Models).empty());
+    Assert::AreEqual(std::wstring(L"28.2022"), runtime::ParseToolVersion(runtime::ToolId::kAsap7Models, L"ASAP7 CDL 28.2022\n"));
+  }
+
   TEST_METHOD(OpenLaneInstallPinsValidatedReleaseAndWritesMarker) {
     const std::vector<runtime::SetupStep> install =
         runtime::BuildToolInstallSteps(runtime::ToolId::kOpenLane2);
     Assert::AreEqual(static_cast<std::size_t>(2), install.size());
     const std::wstring command = JoinArguments(install[1].request.arguments);
     Assert::IsTrue(command.find(
-        L"b89f7866fd3d19da470220baf89d0e7804962941") !=
+        L"a7b0e6dba75ee7e891ff3d7824b29473d9cad289") !=
                    std::wstring::npos);
     Assert::IsTrue(command.find(L"version=2.3.10") != std::wstring::npos);
     Assert::IsTrue(command.find(L".designpp-environment") !=
@@ -158,8 +207,16 @@ TEST_CLASS(ToolCatalogTests) {
     Assert::IsTrue(command.find(L"pull --ff-only") == std::wstring::npos);
     Assert::IsTrue(command.find(L".openlane-candidate.XXXXXX") !=
                    std::wstring::npos);
-    Assert::IsTrue(command.find(L".openlane-backup.XXXXXX") !=
+    Assert::IsTrue(command.find(
+                       L"toolchains/environments/openlane2-2.3.10") !=
                    std::wstring::npos);
+    Assert::IsTrue(command.find(L".openlane-backup.XXXXXX") ==
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"activation is a separate action") !=
+                   std::wstring::npos);
+    Assert::IsTrue(runtime::BuildToolRemoveSteps(
+                       runtime::ToolId::kOpenLane2)
+                       .empty());
   }
 };
 // clang-format on

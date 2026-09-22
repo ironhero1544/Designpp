@@ -85,6 +85,8 @@ class LayoutWindowImplementation final : public ViewWindow {
       bool rebuild_from_stage = false, bool full_flow = false);
   void ShowStages();
   void ApplyState(application::ManagedFlowRunState state);
+  void AppendCentralLog(std::wstring_view category,
+                        std::wstring_view text) const;
   void AppendOutput(std::wstring_view text);
   void ShowReports();
   void ShowArtifacts();
@@ -124,6 +126,7 @@ class LayoutWindowImplementation final : public ViewWindow {
   HWND stages_list_ = nullptr;
   HWND summary_ = nullptr;
   HWND page_tabs_ = nullptr;
+  HWND page_host_ = nullptr;
   HWND runs_list_ = nullptr;
   HWND verification_source_ = nullptr;
   HWND verification_list_ = nullptr;

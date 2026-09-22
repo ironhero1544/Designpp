@@ -18,10 +18,13 @@
 #include "designpp/application/library_browser_model.h"
 #include "designpp/application/library_service.h"
 #include "designpp/application/recent_workspace_store.h"
+#include "designpp/application/toolchain_environment_service.h"
 #include "designpp/gui/dpi.h"
+#include "designpp/gui/pdk_manager_window.h"
 #include "designpp/gui/tool_check_window.h"
 #include "designpp/gui/toolchain_doctor_window.h"
 #include "designpp/gui/workspace_registry.h"
+#include "designpp/runtime/execution_provider.h"
 #include "designpp/runtime/process_runner.h"
 #include "designpp/runtime/setup_catalog.h"
 #include "designpp/runtime/task_scheduler.h"
@@ -83,6 +86,7 @@ class LibraryManagerWindow final {
   void LayoutControls(int width, int height) const;
   void ApplyDpi(UINT dpi);
   void OpenToolCheck();
+  void OpenPdkManager();
   void OpenToolchainDoctor();
   void OpenWorkspace(std::string_view library_id, std::string_view cell_id,
                      std::string_view view_id);
@@ -130,6 +134,8 @@ class LibraryManagerWindow final {
   void StartToolCheck();
   void StartToolInstall(std::size_t tool_index);
   void StartToolRemove(std::size_t tool_index);
+  void StartToolchainManagement(std::size_t tool_index,
+                                application::ToolchainManagementAction action);
   void StartToolchainRemove();
   void StartWslSetup();
   void StartToolchainSetup();
@@ -146,6 +152,10 @@ class LibraryManagerWindow final {
   void FinishOperation(std::wstring status);
   void SetBusyControls(bool busy) const;
   void SetStatus(std::wstring_view status) const;
+  void ShowDeterminateProgress(std::size_t maximum,
+                               std::size_t completed = 0) const;
+  void ShowIndeterminateProgress() const;
+  void RefreshProgressDisplay() const;
   void SetToolState(std::size_t index, std::wstring status,
                     std::wstring version);
   void AppendLog(std::wstring_view text) const;
@@ -161,6 +171,7 @@ class LibraryManagerWindow final {
   UINT dpi_ = kDefaultDpi;
   UniqueFont font_;
   std::unique_ptr<ToolCheckWindow> tool_check_window_;
+  std::unique_ptr<PdkManagerWindow> pdk_manager_window_;
   std::unique_ptr<ToolchainDoctorWindow> toolchain_doctor_window_;
   std::unique_ptr<WorkspaceRegistry> workspace_registry_;
   application::LibraryService library_service_{};
@@ -198,6 +209,7 @@ class LibraryManagerWindow final {
   std::size_t next_setup_step_ = 0;
   std::size_t completed_work_ = 0;
   std::size_t failed_work_ = 0;
+  std::size_t pending_library_operations_ = 0;
   std::size_t maximum_parallel_probes_ = 1;
   std::uint64_t next_task_id_ = 1;
 };

@@ -28,7 +28,11 @@ class ProjectWriterLease final {
   [[nodiscard]] bool Acquired() const noexcept;
 
  private:
+  friend class ProjectService;
+
   struct Implementation;
+  [[nodiscard]] static std::unique_ptr<ProjectWriterLease>
+  TryAcquireCoordinated(const std::filesystem::path& path);
   explicit ProjectWriterLease(std::unique_ptr<Implementation> implementation);
   std::unique_ptr<Implementation> implementation_;
 };
@@ -68,6 +72,11 @@ class ProjectService final {
  public:
   [[nodiscard]] core::Result<ProjectDocument> OpenOrCreate(
       const LibraryRecord& library, std::string_view cell_id) const;
+  // Opens a document for a revision-checked application service update. If a
+  // window in this process already owns the writer lease, the returned document
+  // shares that lease. Ordinary editor opens remain exclusive.
+  [[nodiscard]] core::Result<ProjectDocument> OpenForCoordinatedUpdate(
+      const LibraryRecord& library, std::string_view cell_id) const;
   [[nodiscard]] core::Status Save(ProjectDocument* document) const;
   // Saves a project snapshot without mutating the in-memory document. This is
   // used by asynchronous window saves to keep each cell's draft isolated.
@@ -79,6 +88,9 @@ class ProjectService final {
       const core::Project& project) const;
 
  private:
+  [[nodiscard]] core::Result<ProjectDocument> OpenOrCreateInternal(
+      const LibraryRecord& library, std::string_view cell_id,
+      bool coordinate_with_process_writer) const;
   ProjectStore store_{};
 };
 

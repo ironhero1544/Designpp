@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "designpp/application/managed_flow_run_service.h"
+#include "designpp/core/toolchain_compatibility.h"
 #include "synthesis_test_support.h"
 
 using Microsoft::VisualStudio::CppUnitTestFramework::Assert;
@@ -131,6 +132,28 @@ void WriteCollectedArtifacts(const runtime::WslCommand& copy_command,
 }
 
 runtime::ProcessResult Success(std::string output = {}) {
+  // Successful fake probes supply the same complete evidence as real adapters.
+  const std::string provider = output == "OpenLane v2.3.10\n" ? "openlane2"
+                               : output.starts_with("DESIGNPP_ORFS_TOOL_MODE=")
+                                   ? "orfs"
+                                   : "";
+  for (const auto& entry : core::ToolchainCompatibilityCatalog::Entries()) {
+    if (entry.provider_id != provider) continue;
+    output +=
+        "DESIGNPP_COMPAT_SCHEMA=1\nDESIGNPP_COMPAT_PROVIDER=" + provider +
+        "\nDESIGNPP_COMPAT_BUNDLE=" + std::string(entry.bundle_id) +
+        "\nDESIGNPP_COMPAT_REVISION=" + std::string(entry.revision) +
+        "\nDESIGNPP_COMPAT_CONTRACT=" + std::string(entry.command_contract_id) +
+        "\nDESIGNPP_COMPAT_LOCK=" + std::string(64, 'a') +
+        "\nDESIGNPP_COMPAT_FINGERPRINT=" + std::string(64, 'b') + "\n";
+    for (const auto& dependency : entry.dependencies) {
+      output += "DESIGNPP_COMPAT_DEPENDENCY_" + std::string(dependency.name) +
+                "=" + std::string(dependency.revision) + "\n";
+    }
+    for (const auto feature : entry.required_features) {
+      output += "DESIGNPP_COMPAT_FEATURE_" + std::string(feature) + "=1\n";
+    }
+  }
   runtime::ProcessResult result;
   result.started = true;
   result.exit_code = 0;

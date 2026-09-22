@@ -838,6 +838,69 @@ TEST_METHOD(RunOutcomeSeparatesProcessAndTestFailure) {
   std::filesystem::remove_all(directory, error);
 }
 
+TEST_METHOD(PhysicalVerificationEvidenceRestoresAfterRestart) {
+  const std::filesystem::path directory = NewProjectTestDirectory();
+  application::RunStore store;
+  auto begun = store.Begin(directory, SampleProject(), "physical_verification",
+                           "KLayout DRC", "0.30.2");
+  Assert::IsTrue(begun.Ok());
+  application::RunRecord run = std::move(begun).Value();
+  run.source_run_id = "source-layout-run";
+  run.environment_id = "orfs-environment";
+  run.environment_fingerprint = "environment-sha256";
+  Assert::IsTrue(store.AppendLog(run, "KLayout raw output\n").Ok());
+
+  const std::filesystem::path report =
+      run.directory / L"reports" / L"drc.lyrdb";
+  const std::filesystem::path summary =
+      run.directory / L"reports" / L"physical-verification-summary.json";
+  const std::filesystem::path inputs =
+      run.directory / L"reports" / L"verification-inputs.json";
+  std::ofstream(report, std::ios::binary) << "<report-database/>\n";
+  std::ofstream(summary, std::ios::binary)
+      << "{\"passed\":true,\"violation_count\":0}\n";
+  std::ofstream(inputs, std::ios::binary)
+      << "{\"source_run_id\":\"source-layout-run\"}\n";
+  application::RunOutcome outcome{true, true,
+                                  "reports/physical-verification-summary.json"};
+  Assert::IsTrue(
+      store
+          .Complete(
+              &run, application::RunStatus::kSucceeded, 0, {},
+              {{"verification.report", "lyrdb", "reports/drc.lyrdb", 20,
+                "recipe-sha256", false},
+               {"verification.summary", "json",
+                "reports/physical-verification-summary.json", 39,
+                "recipe-sha256", false},
+               {"verification.inputs", "json",
+                "reports/verification-inputs.json", 38, "input-sha256", false}},
+              outcome)
+          .Ok());
+
+  application::RunStore restarted_store;
+  auto restored = restarted_store.List(directory);
+  Assert::IsTrue(restored.Ok());
+  Assert::AreEqual<std::size_t>(1, restored.Value().size());
+  const auto& saved = restored.Value().front();
+  Assert::IsTrue(saved.status == application::RunStatus::kSucceeded);
+  Assert::AreEqual(std::string("source-layout-run"), saved.source_run_id);
+  Assert::AreEqual(std::string("orfs-environment"), saved.environment_id);
+  Assert::AreEqual(std::string("environment-sha256"),
+                   saved.environment_fingerprint);
+  Assert::IsTrue(saved.outcome.process_succeeded);
+  Assert::IsTrue(saved.outcome.result_succeeded);
+  Assert::AreEqual<std::size_t>(3, saved.artifacts.size());
+  Assert::AreEqual(std::string("input-sha256"), saved.artifacts[2].input_hash);
+  std::ifstream raw(saved.directory / L"logs" / L"raw.log", std::ios::binary);
+  Assert::AreEqual(std::string("KLayout raw output\n"),
+                   std::string((std::istreambuf_iterator<char>(raw)),
+                               std::istreambuf_iterator<char>()));
+  Assert::IsTrue(std::filesystem::is_regular_file(
+      saved.directory / saved.outcome.summary_relative_path));
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+}
+
 TEST_METHOD(RecoverInterruptedPersistsAbandonedActiveRuns) {
   const std::filesystem::path directory = NewProjectTestDirectory();
   application::RunStore store;

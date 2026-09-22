@@ -8,6 +8,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "designpp/adapters/physical_verification_adapter.h"
 #include "designpp/application/run_store.h"
@@ -21,6 +23,7 @@ enum class PhysicalVerificationState {
   kIdle,
   kPreparing,
   kProbing,
+  kCdlModelValidating,
   kCdlGenerating,
   kCdlCombining,
   kRunning,
@@ -29,6 +32,23 @@ enum class PhysicalVerificationState {
   kViolated,
   kFailed,
   kCancelled,
+};
+
+// Frozen input contract for one explicit verification Run. Its hashes are
+// written before tool execution and prevent a later Setup change from being
+// mistaken for the source Layout Run used by this verification.
+struct ResolvedVerificationContext {
+  static constexpr std::uint32_t kContractVersion = 3;
+
+  std::uint32_t contract_version = kContractVersion;
+  std::string source_run_id;
+  std::string platform;
+  std::string gds_sha256;
+  std::string odb_sha256;
+  std::string source_netlist_sha256;
+  std::string recipe_sha256;
+  std::string environment_id;
+  std::string environment_fingerprint;
 };
 
 struct PhysicalVerificationRequest {
@@ -45,6 +65,7 @@ struct PhysicalVerificationRequest {
   std::filesystem::path extracted_path;
   std::string environment_id;
   std::string environment_fingerprint;
+  ResolvedVerificationContext resolved_context;
   std::uint64_t generation = 0;
 };
 
@@ -60,6 +81,27 @@ struct PhysicalVerificationEvent {
 
 using PhysicalVerificationEventSink =
     std::function<void(PhysicalVerificationEvent)>;
+
+// Resolves managed verification recipes from the source Layout Run contract.
+// Callers must provide backend and platform from that Run, never current Setup.
+[[nodiscard]] std::vector<core::VerificationRecipe>
+ResolveManagedVerificationRecipes(const core::ToolchainProfile& profile,
+                                  std::string_view backend,
+                                  std::string_view platform);
+
+struct VerificationCapability {
+  bool drc_ready = false;
+  bool lvs_ready = false;
+  std::string drc_status;
+  std::string lvs_status;
+};
+
+// Intersects discovered platform files with the managed recipe registry. File
+// presence alone never advertises an independent verification capability.
+[[nodiscard]] VerificationCapability ResolveVerificationCapability(
+    const core::ToolchainProfile& profile, std::string_view backend,
+    std::string_view platform, bool platform_ready, bool drc_files_ready,
+    bool lvs_files_ready);
 
 // Runs one explicit DRC or LVS request against an immutable Layout Run.
 class PhysicalVerificationService final {

@@ -1211,10 +1211,10 @@ bool LayoutSetupController::Open(
                            monitor_info.rcWork.right - width);
   const int y = std::clamp(owner_rect.top + 40, monitor_info.rcWork.top,
                            monitor_info.rcWork.bottom - height);
-  HWND dialog =
-      CreateWindowExW(WS_EX_DLGMODALFRAME, kSetupClass, L"Layout Setup",
-                      WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX,
-                      x, y, width, height, owner, nullptr, instance, &state);
+  HWND dialog = CreateWindowExW(
+      WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, kSetupClass, L"Layout Setup",
+      WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX, x, y, width,
+      height, nullptr, nullptr, instance, &state);
   if (!dialog) return false;
   ShowWindow(dialog, SW_SHOW);
   return true;
@@ -1253,6 +1253,10 @@ void LayoutSetupController::Close() {
 }
 bool LayoutSetupController::TranslateAccelerator(const MSG& message) {
   if (!state_ || !state_->window) return false;
+  if (message.hwnd != state_->window &&
+      !IsChild(state_->window, message.hwnd)) {
+    return false;
+  }
   MSG copy = message;
   return IsDialogMessageW(state_->window, &copy) != FALSE;
 }

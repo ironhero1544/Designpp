@@ -9,11 +9,14 @@
 #include <cctype>
 #include <charconv>
 #include <cstdio>
+#include <cwctype>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 
@@ -611,9 +614,8 @@ core::Result<core::Project> DecodeProject(std::string_view json) {
     const JsonValue* verification_value =
         Member(*root, "physical_verification");
     const auto* verification =
-        verification_value
-            ? verification_value->Get<JsonValue::Object>()
-            : nullptr;
+        verification_value ? verification_value->Get<JsonValue::Object>()
+                           : nullptr;
     auto& configuration = project.physical_verification;
     if (verification == nullptr ||
         !ReadString(*verification, "drc_recipe_id",
@@ -977,8 +979,44 @@ bool IsWithin(const std::filesystem::path& root,
 
 }  // namespace
 
-struct ProjectWriterLease::Implementation final {
+namespace {
+
+struct SharedWriterLease final {
   HANDLE handle = INVALID_HANDLE_VALUE;
+
+  ~SharedWriterLease() {
+    if (handle == INVALID_HANDLE_VALUE) return;
+    OVERLAPPED overlapped{};
+    UnlockFileEx(handle, 0, 1, 0, &overlapped);
+    CloseHandle(handle);
+  }
+};
+
+std::wstring WriterLeaseKey(const std::filesystem::path& path) {
+  std::error_code error;
+  auto absolute = std::filesystem::absolute(path, error);
+  std::wstring key = (error ? path : absolute).lexically_normal().wstring();
+  std::transform(key.begin(), key.end(), key.begin(),
+                 [](wchar_t character) { return std::towlower(character); });
+  return key;
+}
+
+std::mutex& WriterLeaseRegistryMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<std::wstring, std::weak_ptr<SharedWriterLease>>&
+WriterLeaseRegistry() {
+  static std::unordered_map<std::wstring, std::weak_ptr<SharedWriterLease>>
+      registry;
+  return registry;
+}
+
+}  // namespace
+
+struct ProjectWriterLease::Implementation final {
+  std::shared_ptr<SharedWriterLease> shared;
 };
 
 ProjectWriterLease::ProjectWriterLease() = default;
@@ -991,47 +1029,78 @@ ProjectWriterLease::ProjectWriterLease(ProjectWriterLease&&) noexcept = default;
 ProjectWriterLease& ProjectWriterLease::operator=(
     ProjectWriterLease&&) noexcept = default;
 
-ProjectWriterLease::~ProjectWriterLease() {
-  if (implementation_ && implementation_->handle != INVALID_HANDLE_VALUE) {
-    OVERLAPPED overlapped{};
-    UnlockFileEx(implementation_->handle, 0, 1, 0, &overlapped);
-    CloseHandle(implementation_->handle);
-  }
-}
+ProjectWriterLease::~ProjectWriterLease() = default;
 
-std::unique_ptr<ProjectWriterLease> ProjectWriterLease::TryAcquire(
-    const std::filesystem::path& path) {
+namespace {
+
+std::shared_ptr<SharedWriterLease> AcquireWriterLease(
+    const std::filesystem::path& path, bool coordinate_with_process_writer) {
   std::error_code error;
   std::filesystem::create_directories(path.parent_path(), error);
   if (error) return nullptr;
-  auto implementation = std::make_unique<Implementation>();
-  implementation->handle =
+
+  const std::wstring key = WriterLeaseKey(path);
+  std::lock_guard lock(WriterLeaseRegistryMutex());
+  auto& registry = WriterLeaseRegistry();
+  if (const auto found = registry.find(key); found != registry.end()) {
+    if (auto shared = found->second.lock()) {
+      if (!coordinate_with_process_writer) return nullptr;
+      return shared;
+    }
+    registry.erase(found);
+  }
+
+  auto shared = std::make_shared<SharedWriterLease>();
+  shared->handle =
       CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
                   nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
-  if (implementation->handle == INVALID_HANDLE_VALUE) return nullptr;
+  if (shared->handle == INVALID_HANDLE_VALUE) return nullptr;
   OVERLAPPED overlapped{};
-  if (!LockFileEx(implementation->handle,
+  if (!LockFileEx(shared->handle,
                   LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
                   &overlapped)) {
-    CloseHandle(implementation->handle);
-    implementation->handle = INVALID_HANDLE_VALUE;
+    CloseHandle(shared->handle);
+    shared->handle = INVALID_HANDLE_VALUE;
     return nullptr;
   }
   const std::string metadata = "pid=" + std::to_string(GetCurrentProcessId()) +
                                "\nacquired_utc=" + UtcNow() + "\n";
-  SetFilePointer(implementation->handle, 0, nullptr, FILE_BEGIN);
-  SetEndOfFile(implementation->handle);
+  SetFilePointer(shared->handle, 0, nullptr, FILE_BEGIN);
+  SetEndOfFile(shared->handle);
   DWORD written = 0;
-  static_cast<void>(WriteFile(implementation->handle, metadata.data(),
+  static_cast<void>(WriteFile(shared->handle, metadata.data(),
                               static_cast<DWORD>(metadata.size()), &written,
                               nullptr));
-  static_cast<void>(FlushFileBuffers(implementation->handle));
+  static_cast<void>(FlushFileBuffers(shared->handle));
+  registry.emplace(key, shared);
+  return shared;
+}
+
+}  // namespace
+
+std::unique_ptr<ProjectWriterLease> ProjectWriterLease::TryAcquire(
+    const std::filesystem::path& path) {
+  auto shared = AcquireWriterLease(path, false);
+  if (!shared) return nullptr;
+  auto implementation = std::make_unique<Implementation>();
+  implementation->shared = std::move(shared);
+  return std::unique_ptr<ProjectWriterLease>(
+      new ProjectWriterLease(std::move(implementation)));
+}
+
+std::unique_ptr<ProjectWriterLease> ProjectWriterLease::TryAcquireCoordinated(
+    const std::filesystem::path& path) {
+  auto shared = AcquireWriterLease(path, true);
+  if (!shared) return nullptr;
+  auto implementation = std::make_unique<Implementation>();
+  implementation->shared = std::move(shared);
   return std::unique_ptr<ProjectWriterLease>(
       new ProjectWriterLease(std::move(implementation)));
 }
 
 bool ProjectWriterLease::Acquired() const noexcept {
-  return implementation_ && implementation_->handle != INVALID_HANDLE_VALUE;
+  return implementation_ && implementation_->shared &&
+         implementation_->shared->handle != INVALID_HANDLE_VALUE;
 }
 
 core::Result<core::Project> ProjectStore::Load(
@@ -1062,6 +1131,17 @@ Status ProjectStore::Save(const core::Project& project,
 
 core::Result<ProjectDocument> ProjectService::OpenOrCreate(
     const LibraryRecord& library, std::string_view cell_id) const {
+  return OpenOrCreateInternal(library, cell_id, false);
+}
+
+core::Result<ProjectDocument> ProjectService::OpenForCoordinatedUpdate(
+    const LibraryRecord& library, std::string_view cell_id) const {
+  return OpenOrCreateInternal(library, cell_id, true);
+}
+
+core::Result<ProjectDocument> ProjectService::OpenOrCreateInternal(
+    const LibraryRecord& library, std::string_view cell_id,
+    bool coordinate_with_process_writer) const {
   const core::Cell* cell = FindCell(library, cell_id);
   if (cell == nullptr) {
     return Status{ErrorCode::kNotFound, "Cell does not exist", 0};
@@ -1074,7 +1154,10 @@ core::Result<ProjectDocument> ProjectService::OpenOrCreate(
   ProjectDocument document;
   document.library_directory = library.directory;
   document.project_path = project_path;
-  document.writer_lease = ProjectWriterLease::TryAcquire(lease_path);
+  document.writer_lease =
+      coordinate_with_process_writer
+          ? ProjectWriterLease::TryAcquireCoordinated(lease_path)
+          : ProjectWriterLease::TryAcquire(lease_path);
   document.read_only = document.writer_lease == nullptr;
   std::error_code error;
   if (std::filesystem::exists(project_path, error)) {

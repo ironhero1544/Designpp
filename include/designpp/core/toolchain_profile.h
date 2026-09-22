@@ -21,6 +21,9 @@ struct InstalledToolchainEnvironment {
   std::string version;
   std::string fingerprint;
   bool verified = false;
+  std::string command_contract_id;
+  std::string framework_revision;
+  std::string lock_hash;
 };
 
 struct VerificationRecipe {
@@ -60,7 +63,7 @@ struct ToolchainProfile {
 };
 
 struct ToolchainSettings {
-  static constexpr std::uint32_t kSchemaVersion = 3;
+  static constexpr std::uint32_t kSchemaVersion = 4;
 
   std::uint32_t schema_version = kSchemaVersion;
   std::uint64_t revision = 1;

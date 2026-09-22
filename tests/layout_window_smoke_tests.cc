@@ -106,24 +106,8 @@ HWND FindTestLayoutWindow() {
   return FindWindowW(L"DesignPlusPlus.LayoutWindow", L"Design++ Layout — top");
 }
 
-struct OwnedWindowSearch {
-  HWND owner = nullptr;
-  HWND found = nullptr;
-};
-
-BOOL CALLBACK FindOwnedWindowProcedure(HWND window, LPARAM parameter) {
-  auto* search = reinterpret_cast<OwnedWindowSearch*>(parameter);
-  if (GetWindow(window, GW_OWNER) == search->owner) {
-    search->found = window;
-    return FALSE;
-  }
-  return TRUE;
-}
-
-HWND FindOwnedSetupWindow(HWND owner) {
-  OwnedWindowSearch search{owner};
-  EnumWindows(FindOwnedWindowProcedure, reinterpret_cast<LPARAM>(&search));
-  return search.found;
+HWND FindSetupWindow() {
+  return FindWindowW(L"DesignPlusPlus.LayoutSetupDialog", nullptr);
 }
 
 HWND CreateTestOwnerWindow() {
@@ -197,6 +181,35 @@ TEST_CLASS(LayoutWindowSmokeTests) {
                                   workspace.record(), {}, {}));
     Assert::IsFalse(window.IsOpen());
     Assert::IsFalse(window.IsOpen());
+  }
+
+  TEST_METHOD(VerificationControlsRemainVisibleAfterResize) {
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
+    Assert::IsTrue(InitCommonControlsEx(&controls) != FALSE);
+    TemporaryLayoutWindowWorkspace workspace;
+    gui::LayoutWindow window;
+    Assert::IsTrue(window.Create(GetModuleHandleW(nullptr), workspace.Request(),
+                                 workspace.record(), {}, {}));
+    HWND layout = FindTestLayoutWindow();
+    HWND tabs = GetDlgItem(layout, 7611);
+    Assert::IsNotNull(tabs);
+    TabCtrl_SetCurSel(tabs, 1);
+    NMHDR notification{tabs, 7611, TCN_SELCHANGE};
+    SendMessageW(layout, WM_NOTIFY, 7611,
+                 reinterpret_cast<LPARAM>(&notification));
+    SetWindowPos(layout, nullptr, 0, 0, 1800, 1100,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    PumpMessages(100);
+    for (int id : {7612, 7613, 7614, 7615}) {
+      HWND button = FindControlById(layout, id);
+      Assert::IsNotNull(button);
+      Assert::IsTrue(IsWindowVisible(button) != FALSE);
+      RECT bounds{};
+      Assert::IsTrue(GetWindowRect(button, &bounds) != FALSE);
+      Assert::IsTrue(bounds.right > bounds.left);
+      Assert::IsTrue(bounds.bottom > bounds.top);
+    }
+    window.Close();
   }
 
   TEST_METHOD(SaveBlankDefaultsPersistsWithoutClosingSetup) {
@@ -323,12 +336,14 @@ TEST_CLASS(LayoutWindowSmokeTests) {
     core::PhysicalImplementationConfiguration saved;
     HWND owner = CreateTestOwnerWindow();
     Assert::IsNotNull(owner);
+    ShowWindow(owner, SW_SHOW);
     Assert::IsTrue(controller.Open(
         owner, GetModuleHandleW(nullptr), configuration, {}, platforms, {},
         [&](const core::PhysicalImplementationConfiguration& value) {
           saved = value;
         }));
-    HWND setup = FindOwnedSetupWindow(owner);
+    HWND setup = FindSetupWindow();
+    Assert::IsNull(GetWindow(setup, GW_OWNER));
     HWND platform = FindControlById(setup, 7795);
     Assert::IsNotNull(platform);
     Assert::IsTrue(SendMessageW(platform, CB_SELECTSTRING, 0,
@@ -339,6 +354,7 @@ TEST_CLASS(LayoutWindowSmokeTests) {
     Assert::AreEqual(std::string("sky130hd"), saved.orfs.platform);
     controller.Saved(core::Status::Success(), saved);
     SendMessageW(setup, WM_CLOSE, 0, 0);
+    Assert::IsTrue(IsWindowVisible(owner) != FALSE);
     DestroyWindow(owner);
   }
 
@@ -359,7 +375,8 @@ TEST_CLASS(LayoutWindowSmokeTests) {
         [&](const core::PhysicalImplementationConfiguration& value) {
           saved = value;
         }));
-    HWND setup = FindOwnedSetupWindow(owner);
+    HWND setup = FindSetupWindow();
+    Assert::IsNull(GetWindow(setup, GW_OWNER));
     HWND platform = FindControlById(setup, 7795);
     Assert::AreEqual(static_cast<LRESULT>(2),
                      SendMessageW(platform, CB_GETCOUNT, 0, 0));
