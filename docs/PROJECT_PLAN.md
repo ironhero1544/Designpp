@@ -1,5 +1,8 @@
 # Design++ 제작 계획
 
+> 1.0.0 배포 기준: [릴리스 노트](RELEASE_NOTES_1.0.0.md),
+> [설치 안내](INSTALL.md). 과거 단계의 검증 기록은 현재 완료 상태와 구분한다.
+
 ## Cell-scoped PDK manager
 
 Tools > PDK management opens a separate resizable window pinned to the selected
@@ -883,7 +886,7 @@ ASAP7 합성은 `TestResults/Tlqkf_IRONHERO_2026-09-22_08_57_53_net40.trx`
 | v0.7 | OpenLane 2 Full Flow |
 | v0.8 | ORFS 단계별 Physical Design |
 | v0.9 | KLayout, Magic, Netgen 물리 검증 |
-| v1.0 | 복구, run 비교, 문서, 배포 안정화 |
+| v1.0 | 프레임워크 호환성 관리, 문서, ZIP·NSIS 배포 (run 비교는 후속) |
 
 ## 13. 테스트 전략
 

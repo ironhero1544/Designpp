@@ -1064,7 +1064,7 @@ TEST_METHOD(OrfsCommandUnitsKeepTwentyNanosecondClockAcrossLibertyUnits) {
 TEST_METHOD(OrfsAsap7SynthesisHandlesCompressedMultiLiberty) {
   adapters::OrfsAdapter adapter;
   core::ToolchainProfile profile;
-  profile.orfs_root = "~/.designpp/toolchains/orfs";
+  profile.orfs_root = "~/.designpp/toolchains/environments/orfs-26Q2";
   const runtime::ProcessResult probe =
       Run(adapter.BuildProbeCommand(profile), std::chrono::minutes(2));
   if (probe.exit_code != 0) Logger::WriteMessage(probe.output.c_str());
@@ -1078,6 +1078,7 @@ TEST_METHOD(OrfsAsap7SynthesisHandlesCompressedMultiLiberty) {
   ScopedDirectory directory;
   adapters::OrfsRequest request = WriteOrfsFixture(
       directory.path(), "asap7", probe.output.substr(begin, end - begin));
+  request.profile = profile;
   // Mirror the service boundary: user paths may contain Unicode, but EDA
   // tools receive an ASCII-safe staging copy rather than the original path.
   const std::filesystem::path staging = directory.path() / L"staging";

@@ -301,30 +301,40 @@ TEST_METHOD(ViolationKeepsProcessSuccessButFailsTimingResult) {
 }
 
 TEST_METHOD(RunningCancellationAndDuplicateCallbackCompleteExactlyOnce) {
-  TemporarySynthesisWorkspace workspace;
-  auto request = MakeTimingRequest(workspace);
-  CreateCompatibleSynthesisRun(request);
-  ControlledExecutionProvider provider;
-  application::TimingRunService service(&provider);
-  TimingEventCollector collector;
-  Assert::IsTrue(service
-                     .Start(std::move(request),
-                            [&collector](application::TimingRunEvent event) {
-                              collector.Add(std::move(event));
-                            })
-                     .Ok());
-  Assert::IsTrue(provider.WaitForStarts(1));
-  provider.Complete(0, SuccessfulProcess("OpenSTA 2.6.0\n"));
-  Assert::IsTrue(provider.WaitForStarts(2));
-  service.Cancel();
-  Assert::IsTrue(provider.Cancelled(1));
-  runtime::ProcessResult cancelled = SuccessfulProcess();
-  cancelled.cancelled = true;
-  provider.Complete(1, cancelled, 2);
-  Assert::IsTrue(collector.WaitForTerminal());
-  Assert::AreEqual<std::size_t>(1U, collector.TerminalCount());
-  Assert::IsTrue(collector.Terminal().status.code ==
-                 core::ErrorCode::kCancelled);
+  for (int iteration = 0; iteration < 8; ++iteration) {
+    TemporarySynthesisWorkspace workspace;
+    auto request = MakeTimingRequest(workspace);
+    CreateCompatibleSynthesisRun(request);
+    ControlledExecutionProvider provider;
+    application::TimingRunService service(&provider);
+    TimingEventCollector collector;
+    Assert::IsTrue(service
+                       .Start(std::move(request),
+                              [&collector](application::TimingRunEvent event) {
+                                collector.Add(std::move(event));
+                              })
+                       .Ok());
+    Assert::IsTrue(provider.WaitForStarts(1));
+    if (iteration % 2 == 0) provider.PauseNextStartReturn();
+    provider.Complete(0, SuccessfulProcess("OpenSTA 2.6.0\n"));
+    Assert::IsTrue(provider.WaitForStarts(2));
+    // Start registration precedes handle handoff. Exercise cancellation both
+    // while Start is held and with its return allowed to race normally.
+    service.Cancel();
+    if (iteration % 2 == 0) {
+      const bool cancelled_before_handoff = provider.Cancelled(1);
+      provider.ReleaseStartReturn();
+      Assert::IsFalse(cancelled_before_handoff);
+    }
+    Assert::IsTrue(provider.WaitForCancellation(1));
+    runtime::ProcessResult cancelled = SuccessfulProcess();
+    cancelled.cancelled = true;
+    provider.Complete(1, cancelled, 2);
+    Assert::IsTrue(collector.WaitForTerminal());
+    Assert::AreEqual<std::size_t>(1U, collector.TerminalCount());
+    Assert::IsTrue(collector.Terminal().status.code ==
+                   core::ErrorCode::kCancelled);
+  }
 }
 
 TEST_METHOD(ProbeStartFailureCompletesExactlyOnce) {

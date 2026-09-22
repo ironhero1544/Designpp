@@ -85,6 +85,8 @@ class TemporarySynthesisWorkspace final {
 };
 
 struct FakeExecutionState {
+  std::mutex cancellation_mutex;
+  std::condition_variable cancellation_changed;
   std::atomic_bool cancelled = false;
   std::atomic_bool handle_returned = false;
   std::atomic_bool callback_entered = false;
@@ -106,7 +108,13 @@ class ControlledExecutionHandle final : public runtime::ExecutionHandle {
     }
   }
 
-  void Cancel() noexcept override { state_->cancelled = true; }
+  void Cancel() noexcept override {
+    {
+      std::scoped_lock lock(state_->cancellation_mutex);
+      state_->cancelled = true;
+    }
+    state_->cancellation_changed.notify_all();
+  }
   [[nodiscard]] bool IsRunning() const noexcept override {
     return !state_->cancelled;
   }
@@ -134,6 +142,7 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
     std::shared_ptr<FakeExecutionState> state;
     std::optional<runtime::ProcessResult> synchronous_result;
     runtime::ExecutionCompletionCallback synchronous_callback;
+    bool pause_return = false;
     {
       std::scoped_lock lock(mutex_);
       if (fail_next_start_) {
@@ -142,6 +151,8 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
                 {core::ErrorCode::kIoError, "Controlled start failure", 5}};
       }
       state = std::make_shared<FakeExecutionState>();
+      pause_return = pause_next_start_;
+      pause_next_start_ = false;
       pending_.push_back(
           {command, std::move(output), std::move(complete), state});
       if (complete_next_start_.has_value()) {
@@ -150,6 +161,11 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
         synchronous_callback = pending_.back().complete;
       }
       changed_.notify_all();
+    }
+    if (pause_return) {
+      std::unique_lock lock(mutex_);
+      changed_.wait_for(lock, std::chrono::seconds(5),
+                        [&] { return start_released_; });
     }
     if (synchronous_result.has_value()) {
       InvokeCompletion(state, synchronous_callback,
@@ -169,6 +185,31 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
   void FailNextStart() {
     std::scoped_lock lock(mutex_);
     fail_next_start_ = true;
+  }
+
+  void PauseNextStartReturn() {
+    std::scoped_lock lock(mutex_);
+    pause_next_start_ = true;
+    start_released_ = false;
+  }
+
+  void ReleaseStartReturn() {
+    {
+      std::scoped_lock lock(mutex_);
+      start_released_ = true;
+    }
+    changed_.notify_all();
+  }
+
+  [[nodiscard]] bool WaitForCancellation(std::size_t index) {
+    std::shared_ptr<FakeExecutionState> state;
+    {
+      std::scoped_lock lock(mutex_);
+      state = pending_.at(index).state;
+    }
+    std::unique_lock lock(state->cancellation_mutex);
+    return state->cancellation_changed.wait_for(
+        lock, std::chrono::seconds(5), [&] { return state->cancelled.load(); });
   }
 
   [[nodiscard]] bool WaitForStarts(std::size_t count) {
@@ -264,6 +305,8 @@ class ControlledExecutionProvider final : public runtime::ExecutionProvider {
   std::vector<PendingExecution> pending_;
   std::optional<runtime::ProcessResult> complete_next_start_;
   bool fail_next_start_ = false;
+  bool pause_next_start_ = false;
+  bool start_released_ = true;
 };
 
 inline std::filesystem::path WindowsWorkingDirectory(

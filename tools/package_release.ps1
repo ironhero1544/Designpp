@@ -1,7 +1,8 @@
 param(
   [ValidateSet("Debug", "Release")]
   [string]$Configuration = "Release",
-  [string]$Version = "0.9.0"
+  [ValidatePattern("^\d+\.\d+\.\d+$")]
+  [string]$Version = "1.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $output "Design++.exe"))) {
   throw "Build x64 $Configuration before packaging."
 }
 
+$resolvedRoot = [IO.Path]::GetFullPath($releaseRoot) + [IO.Path]::DirectorySeparatorChar
+if (-not [IO.Path]::GetFullPath($stage).StartsWith($resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+  throw "Package staging path escapes release root."
+}
+if ($Configuration -eq "Release" -and
+    (Get-Item -LiteralPath (Join-Path $output "Design++.exe")).VersionInfo.ProductVersion -ne $Version) {
+  throw "Executable version does not match package version. Rebuild the matching resource version."
+}
 New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
 if (Test-Path -LiteralPath $stage) {
   Remove-Item -LiteralPath $stage -Recurse -Force
@@ -43,6 +52,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $editorAssets "main.js"))) {
 }
 Copy-Item -LiteralPath (Join-Path $output "assets") -Destination $stage -Recurse
 Copy-Item -LiteralPath (Join-Path $repository "docs\INSTALL.md") -Destination $stage
+
+Copy-Item -LiteralPath (Join-Path $repository "README.md") -Destination $stage
+Copy-Item -LiteralPath (Join-Path $repository "README_ko.md") -Destination $stage
+Copy-Item -LiteralPath (Join-Path $repository "docs") -Destination $stage -Recurse
 
 $manifest = [ordered]@{
   schema_version = 1

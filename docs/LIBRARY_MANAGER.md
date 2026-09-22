@@ -35,7 +35,7 @@ Output은 모든 작업의 통합 로그 콘솔이다. Library를 선택하면 C
 - WSL2/Ubuntu 자동 설정
 - 기본 APT 도구와 Design++ 전용 Python 가상환경 설치
 - 표준 Win32 `도구 > Tool Check` 메뉴에서 독립 Tool Check 창 열기
-- Tool Check 창에서 13개 도구의 실행 가능 여부와 버전 병렬 검사
+- Tool Check 창에서 등록된 도구의 실행 가능 여부와 버전 병렬 검사
 - 단계별 진행률, 종료 코드, 실시간 stdout/stderr 로그
 - 실행 중 작업 및 하위 프로세스 트리 취소
 - Per-Monitor V2 high-DPI 배율과 런타임 DPI 변경 대응

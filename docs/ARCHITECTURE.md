@@ -1,5 +1,8 @@
 # Design++ architecture
 
+> 1.0.0 배포 기준: [릴리스 노트](RELEASE_NOTES_1.0.0.md),
+> [설치 안내](INSTALL.md). 과거 단계의 검증 기록은 현재 완료 상태와 구분한다.
+
 ## Layout Setup editing and persistence
 
 `PdkManagerWindow` captures Library/Cell identity on opening. Its workers use
@@ -752,3 +755,10 @@ launches the viewer. It never issues
 `wsl --shutdown`, so unrelated terminals and EDA runs are not interrupted.
 Health checks, repair, viewer execution, cancellation, and exactly-once
 completion remain behind the structured `ExecutionProvider` boundary.
+
+## Windows distribution
+
+NSIS packages the same Release payload as the ZIP into a per-user installation.
+It adds HKCU uninstall metadata and a Start Menu shortcut. Uninstall removes
+only enumerated package files; it does not touch Libraries, settings, WSL or PDKs.
+EDA installation and environment activation remain application operations.
