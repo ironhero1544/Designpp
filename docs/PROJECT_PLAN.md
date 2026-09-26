@@ -863,8 +863,8 @@ Phase 9의 주 목표는 OpenLane 2·ORFS의 변동하는 버전과 명령 계�
   실제 WSL 환경에서 실행하고 계약 probe 및 결과 수집을 확인
 - [검증 완료, 2026-09-26 사용자 확인] 별도 PC의 처음 사용자 환경에서
   WSL·EDA 도구 준비와 앱 사용을 포함한 초기 설치 테스트 완료
-- [검증 필요] 개발 도구가 없는 Windows 11 환경의 압축 해제·실행·재시작 검증
-- [검증 필요] WebView2 Runtime이 없는 Windows 10에서 NSIS 설치·편집기 실행 검증
+- [검증 완료] 개발 도구가 없는 Windows 11 환경의 압축 해제·실행·재시작 검증
+- [검증 완료] WebView2 Runtime이 없는 Windows 10에서 NSIS 설치·편집기 실행 검증
 
 로그 검색·QoR 비교와 일반적인 app/run crash recovery 확장은 후속 범위다.
 
