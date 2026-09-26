@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "designpp/adapters/orfs_flake_inputs.h"
+
 namespace designpp::adapters {
 namespace {
 
@@ -126,23 +128,24 @@ class KLayoutAdapter final : public PhysicalVerificationAdapter {
       command.arguments = {
           L"-lc",
           L"set -eu; root=\"$1\"; "
-          L"case \"$root\" in '~/'*) root=\"$HOME/${root#\\~/}\";; esac; "
-          L"command -v klayout >/dev/null 2>&1; "
-          L"if [ -x \"$root/tools/install/OpenROAD/bin/openroad\" ]; then "
-          L"exit 0; fi; "
-          L"if command -v openroad >/dev/null 2>&1; then exit 0; fi; "
-          L"if [ -f \"$root/flake.nix\" ] && "
-          L"command -v nix >/dev/null 2>&1; then "
-          L"exec nix --extra-experimental-features 'nix-command flakes' "
-          L"develop \"$root\" --no-write-lock-file --offline "
-          L"--max-jobs 0 --builders '' --option fallback false "
-          L"--override-input yosys "
-          L"\"git+file://$root/tools/yosys?submodules=1\" "
-          L"--override-input openroad "
-          L"\"git+file://$root/tools/OpenROAD?submodules=1\" "
-          L"--override-input eqy-src \"git+file://$root/tools/eqy\" "
-          L"--command /bin/bash -lc 'command -v openroad >/dev/null 2>&1'; "
-          L"fi; exit 45",
+          L"case \"$root\" in '~/'*) root=\"$HOME/${root#\\~/}\";; esac; " +
+              std::wstring(kOrfsFlakeInputSelectionScript) +
+              L"command -v klayout >/dev/null 2>&1; "
+              L"if [ -x \"$root/tools/install/OpenROAD/bin/openroad\" ]; then "
+              L"exit 0; fi; "
+              L"if command -v openroad >/dev/null 2>&1; then exit 0; fi; "
+              L"if [ -f \"$root/flake.nix\" ] && "
+              L"command -v nix >/dev/null 2>&1; then "
+              L"exec nix --extra-experimental-features 'nix-command flakes' "
+              L"develop \"$root\" --no-write-lock-file --offline "
+              L"--max-jobs 0 --builders '' --option fallback false "
+              L"--override-input yosys "
+              L"\"$yosys_input\" "
+              L"--override-input openroad "
+              L"\"$openroad_input\" "
+              L"--override-input eqy-src \"$eqy_input\" "
+              L"--command /bin/bash -lc 'command -v openroad >/dev/null 2>&1'; "
+              L"fi; exit 45",
           L"designpp-lvs-probe", input.toolchain_root};
       return command;
     }
@@ -193,23 +196,24 @@ class KLayoutAdapter final : public PhysicalVerificationAdapter {
     export_cdl.arguments = {
         L"-lc",
         L"set -eu; root=\"$1\"; script=\"$2\"; "
-        L"case \"$root\" in '~/'*) root=\"$HOME/${root#\\~/}\";; esac; "
-        L"if [ -x \"$root/tools/install/OpenROAD/bin/openroad\" ]; then "
-        L"exec \"$root/tools/install/OpenROAD/bin/openroad\" -exit "
-        L"-no_splash \"$script\"; fi; "
-        L"if command -v openroad >/dev/null 2>&1; then "
-        L"exec openroad -exit -no_splash \"$script\"; fi; "
-        L"if [ -f \"$root/flake.nix\" ] && command -v nix >/dev/null 2>&1; "
-        L"then "
-        L"exec nix --extra-experimental-features 'nix-command flakes' "
-        L"develop \"$root\" --no-write-lock-file --offline --max-jobs 0 "
-        L"--builders '' --option fallback false "
-        L"--override-input yosys \"git+file://$root/tools/yosys?submodules=1\" "
-        L"--override-input openroad "
-        L"\"git+file://$root/tools/OpenROAD?submodules=1\" "
-        L"--override-input eqy-src \"git+file://$root/tools/eqy\" "
-        L"--command openroad -exit "
-        L"-no_splash \"$script\"; fi; exit 45",
+        L"case \"$root\" in '~/'*) root=\"$HOME/${root#\\~/}\";; esac; " +
+            std::wstring(kOrfsFlakeInputSelectionScript) +
+            L"if [ -x \"$root/tools/install/OpenROAD/bin/openroad\" ]; then "
+            L"exec \"$root/tools/install/OpenROAD/bin/openroad\" -exit "
+            L"-no_splash \"$script\"; fi; "
+            L"if command -v openroad >/dev/null 2>&1; then "
+            L"exec openroad -exit -no_splash \"$script\"; fi; "
+            L"if [ -f \"$root/flake.nix\" ] && command -v nix >/dev/null 2>&1; "
+            L"then "
+            L"exec nix --extra-experimental-features 'nix-command flakes' "
+            L"develop \"$root\" --no-write-lock-file --offline --max-jobs 0 "
+            L"--builders '' --option fallback false "
+            L"--override-input yosys \"$yosys_input\" "
+            L"--override-input openroad "
+            L"\"$openroad_input\" "
+            L"--override-input eqy-src \"$eqy_input\" "
+            L"--command openroad -exit "
+            L"-no_splash \"$script\"; fi; exit 45",
         L"designpp-cdl-export", input.toolchain_root,
         input.preparation_script_path};
 

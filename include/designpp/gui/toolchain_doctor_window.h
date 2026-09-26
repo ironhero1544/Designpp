@@ -78,6 +78,7 @@ class ToolchainDoctorWindow final {
   HWND delete_button_ = nullptr;
   HWND save_button_ = nullptr;
   HWND diagnose_button_ = nullptr;
+  HWND repair_wsl_button_ = nullptr;
   HWND cancel_button_ = nullptr;
   HWND checks_ = nullptr;
   HWND status_ = nullptr;

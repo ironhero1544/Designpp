@@ -39,6 +39,15 @@ await Promise.all([
       'node_modules/monaco-editor/LICENSE',
       path.join(outputDirectory, 'licenses', 'monaco-editor-LICENSE.txt')),
   copyFile(
+      'node_modules/monaco-editor/ThirdPartyNotices.txt',
+      path.join(outputDirectory, 'licenses', 'monaco-editor-ThirdPartyNotices.txt')),
+  copyFile(
+      'node_modules/dompurify/LICENSE',
+      path.join(outputDirectory, 'licenses', 'dompurify-LICENSE.txt')),
+  copyFile(
+      'node_modules/marked/LICENSE.md',
+      path.join(outputDirectory, 'licenses', 'marked-LICENSE.md')),
+  copyFile(
       'node_modules/esbuild/LICENSE.md',
       path.join(outputDirectory, 'licenses', 'esbuild-LICENSE.md')),
 ]);

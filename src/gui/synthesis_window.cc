@@ -13,6 +13,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "Resource.h"
+
 namespace designpp::gui {
 namespace {
 
@@ -119,7 +121,8 @@ bool SynthesisWindow::Create(HINSTANCE instance,
   window_class.lpfnWndProc = WindowProcedure;
   window_class.lpszClassName = kSynthesisWindowClassName;
   window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-  window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  window_class.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_DESIGN));
+  window_class.hIconSm = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_SMALL));
   window_class.hbrBackground =
       reinterpret_cast<HBRUSH>(static_cast<INT_PTR>(COLOR_WINDOW + 1));
   if (RegisterClassExW(&window_class) == 0 &&

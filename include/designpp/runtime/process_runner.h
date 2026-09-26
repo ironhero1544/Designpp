@@ -96,7 +96,8 @@ class ProcessRunner final {
       CompletionCallback on_complete);
 
   // Starts only the requested child process with UAC elevation. No GUI is
-  // relaunched and elevated stdout/stderr is not redirected.
+  // relaunched and elevated stdout/stderr is not redirected, so its process
+  // window remains visible for setup progress.
   [[nodiscard]] static ProcessLaunchResult RunElevatedAsync(
       ProcessRequest request, CompletionCallback on_complete);
 };

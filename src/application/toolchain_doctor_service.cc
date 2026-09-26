@@ -110,6 +110,29 @@ struct ToolchainDoctorService::Implementation final
       command.arguments = {L"-r"};
       return command;
     }
+    if (id == DoctorCheckId::kPdk) {
+      // PDK management can use either OpenLane's installed PDKs or an ORFS
+      // platform. Keep profile paths in positional arguments, never shell text.
+      command.program = L"/bin/bash";
+      command.arguments = {
+          L"-c",
+          L"pdk=$1; orfs=$2; "
+          L"case $pdk in '~/'*) pdk=$HOME/${pdk#\\~/};; esac; "
+          L"case $orfs in '~/'*) orfs=$HOME/${orfs#\\~/};; esac; "
+          L"if test -n \"$pdk\" && test -d \"$pdk\" && "
+          L"find \"$pdk\" -type d -name libs.ref -print -quit "
+          L"2>/dev/null | grep -q .; then "
+          L"printf 'DESIGNPP_PDK_SOURCE=OpenLane\\n'; exit 0; fi; "
+          L"if test -n \"$orfs\" && test -d \"$orfs/flow/platforms\"; "
+          L"then for platform in \"$orfs\"/flow/platforms/*; do "
+          L"if test -f \"$platform/config.mk\" || "
+          L"test -f \"$platform/Makefile\"; then "
+          L"printf 'DESIGNPP_PDK_SOURCE=ORFS\\n'; exit 0; fi; "
+          L"done; fi; exit 1",
+          L"designpp-doctor-pdk", Utf8ToWide(profile.pdk_root),
+          Utf8ToWide(profile.orfs_root)};
+      return command;
+    }
     command.program = L"/usr/bin/test";
     if (id == DoctorCheckId::kOpenLane) {
       command.arguments = {L"-f",
@@ -117,8 +140,6 @@ struct ToolchainDoctorService::Implementation final
     } else if (id == DoctorCheckId::kOrfs) {
       command.arguments = {L"-f",
                            ToolPath(profile.orfs_root, L"flow/Makefile")};
-    } else if (id == DoctorCheckId::kPdk) {
-      command.arguments = {L"-d", ToolPath(profile.pdk_root, L"")};
     }
     return command;
   }
@@ -156,12 +177,21 @@ struct ToolchainDoctorService::Implementation final
                                 0});
       return;
     }
-    if (id == DoctorCheckId::kPdk && profile.pdk_root.empty()) {
+    std::string missing_root;
+    if (id == DoctorCheckId::kOpenLane && profile.openlane_root.empty()) {
+      missing_root = "OpenLane 2 root is not configured";
+    } else if (id == DoctorCheckId::kOrfs && profile.orfs_root.empty()) {
+      missing_root = "ORFS root is not configured";
+    } else if (id == DoctorCheckId::kPdk && profile.pdk_root.empty() &&
+               profile.orfs_root.empty()) {
+      missing_root = "OpenLane PDK and ORFS roots are not configured";
+    }
+    if (!missing_root.empty()) {
       {
         std::scoped_lock lock(mutex);
         all_required_passed = false;
       }
-      EmitCheck({id, false, true, "PDK root is not configured", {}});
+      EmitCheck({id, false, true, std::move(missing_root), {}});
       StartNext();
       return;
     }
@@ -218,17 +248,59 @@ struct ToolchainDoctorService::Implementation final
       captured.swap(output);
     }
     if (captured.empty()) captured = result.output;
+    std::string diagnostic_text = captured;
+    diagnostic_text.erase(
+        std::remove(diagnostic_text.begin(), diagnostic_text.end(), '\0'),
+        diagnostic_text.end());
     bool passed = result.started && !result.cancelled &&
                   result.error_message.empty() && result.exit_code == 0;
     std::string message;
-    if (id == DoctorCheckId::kWsl2 && passed &&
-        !ContainsCaseInsensitive(captured, "wsl2")) {
+    const bool openlane_pdk =
+        diagnostic_text.find("DESIGNPP_PDK_SOURCE=OpenLane") !=
+        std::string::npos;
+    const bool orfs_pdk =
+        diagnostic_text.find("DESIGNPP_PDK_SOURCE=ORFS") != std::string::npos;
+    if (id == DoctorCheckId::kPdk && passed && !openlane_pdk && !orfs_pdk) {
       passed = false;
-      message = "Selected distribution is not running as WSL2";
+    }
+    if (id == DoctorCheckId::kWsl2 &&
+        ContainsCaseInsensitive(diagnostic_text, "unexpected")) {
+      passed = false;
+      message =
+          "WSL returned UNEXPECTED; update WSL in Tool Check and rerun Doctor";
+    } else if (id == DoctorCheckId::kWsl2 && passed &&
+               !ContainsCaseInsensitive(diagnostic_text, "wsl2")) {
+      passed = false;
+      message =
+          "Selected distribution is not running as WSL2; run WSL2 setup in "
+          "Tool Check";
+    } else if (id == DoctorCheckId::kPdk && passed) {
+      message = openlane_pdk
+                    ? "OpenLane PDKs are available in " + profile.pdk_root
+                    : "ORFS platforms are available in " + profile.orfs_root +
+                          "/flow/platforms";
     } else if (passed) {
       message = std::string(DoctorCheckName(id)) + " is ready";
     } else if (!result.error_message.empty()) {
       message = WideToUtf8(result.error_message);
+    } else if (id == DoctorCheckId::kWsl2) {
+      message = "WSL is unavailable; update WSL in Tool Check and rerun Doctor";
+    } else if (id == DoctorCheckId::kOpenLane) {
+      message =
+          "OpenLane 2 root is unavailable in the selected WSL "
+          "distribution: " +
+          profile.openlane_root +
+          "; activate the installed environment in Tool Check";
+    } else if (id == DoctorCheckId::kOrfs) {
+      message = "ORFS root is unavailable in the selected WSL distribution: " +
+                profile.orfs_root +
+                "; activate the installed environment in Tool Check";
+    } else if (id == DoctorCheckId::kPdk) {
+      message =
+          "No OpenLane PDKs or ORFS platforms found in the selected "
+          "WSL distribution (OpenLane: " +
+          profile.pdk_root + ", ORFS: " + profile.orfs_root +
+          "/flow/platforms)";
     } else {
       message = std::string(DoctorCheckName(id)) + " is unavailable";
     }
@@ -359,7 +431,7 @@ std::string_view DoctorCheckName(DoctorCheckId id) noexcept {
     case DoctorCheckId::kOrfs:
       return "ORFS";
     case DoctorCheckId::kPdk:
-      return "PDK root";
+      return "PDK availability";
   }
   return "Unknown";
 }

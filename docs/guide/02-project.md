@@ -10,10 +10,12 @@ Library는 설계 묶음, Cell은 설계 단위, View는 작업 종류입니다.
 ## 실행 순서
 
 1. Library Manager에서 사용할 Library Root를 설정합니다.
+   ![등록된 Library와 Cell·View 작업 영역을 보여 주는 Library Manager 화면](../images/library-manager-live.jpg)
 2. **새 Library...**로 Library를 만들고 선택합니다.
 3. 해당 Library에 Cell을 만듭니다. 예를 들어 카운터 설계는 `Counter`로 구분할 수 있습니다.
 4. 목적에 맞게 RTL, Testbench, Constraints, Synthesis, Timing, Layout View를 만듭니다.
 5. View를 더블클릭하여 작업 창을 엽니다.
+   ![Library Manager에서 Timer Cell과 작업별 View를 선택하는 화면](../images/library-cell-view-live.jpg)
 6. 소스 작업 창의 **Add Files...**로 파일을 추가합니다.
    파일은 Library 내부 관리 폴더에 복사되므로 이후 편집 대상은 그 복사본입니다.
 7. Source 패널에서 RTL, Testbench, Constraints 분류와 포함할 파일을 확인합니다.

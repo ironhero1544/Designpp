@@ -12,6 +12,7 @@ RTL 파일과 사용할 top module, Verilator가 필요합니다.
 1. RTL View를 열고 Source 패널에서 편집할 파일을 더블클릭합니다.
 2. Inspector에서 **Top module**, include 경로, defines와 parameters를 확인합니다.
    자동으로 제안된 값도 실제 설계 의도와 일치하는지 확인합니다.
+   ![Timer RTL 편집 화면에서 top module과 Lint 실행 버튼을 확인하는 모습](../images/rtl-lint-live.jpg)
 3. Source 패널의 체크박스로 실행에 포함할 RTL 파일을 선택합니다.
 4. **Save (Ctrl+S)**로 변경 사항을 저장합니다.
 5. **Verilator Lint**를 실행합니다. 미저장 항목 안내가 나오면 저장을 완료합니다.

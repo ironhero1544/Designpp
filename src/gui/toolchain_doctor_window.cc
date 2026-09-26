@@ -13,6 +13,8 @@
 #include <string>
 #include <utility>
 
+#include "Resource.h"
+
 namespace designpp::gui {
 namespace {
 
@@ -24,6 +26,7 @@ constexpr int kCancelButtonId = 4104;
 constexpr int kAddButtonId = 4105;
 constexpr int kDuplicateButtonId = 4106;
 constexpr int kDeleteButtonId = 4107;
+constexpr int kRepairWslButtonId = 4108;
 
 std::string WideToUtf8(std::wstring_view text);
 
@@ -214,6 +217,12 @@ LRESULT ToolchainDoctorWindow::HandleMessage(UINT message, WPARAM wparam,
         BeginDiagnosis();
         return 0;
       }
+      if (LOWORD(wparam) == kRepairWslButtonId) {
+        if (owner_ != nullptr && IsWindow(owner_)) {
+          PostMessageW(owner_, WM_COMMAND, MAKEWPARAM(IDM_WSL_SETUP, 0), 0);
+        }
+        return 0;
+      }
       if (LOWORD(wparam) == kCancelButtonId) {
         CancelDiagnosis();
         return 0;
@@ -271,7 +280,7 @@ bool ToolchainDoctorWindow::CreateControls() {
   openlane_edit_ = create_edit();
   create_label(L"ORFS root");
   orfs_edit_ = create_edit();
-  create_label(L"PDK root");
+  create_label(L"OpenLane PDK root");
   pdk_edit_ = create_edit();
   create_label(L"CPU budget");
   cpu_edit_ = create_edit();
@@ -299,6 +308,11 @@ bool ToolchainDoctorWindow::CreateControls() {
       0, 0, window_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDiagnoseButtonId)),
       instance_, nullptr);
+  repair_wsl_button_ = CreateWindowExW(
+      0, L"BUTTON", L"Repair WSL...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0,
+      0, 0, 0, window_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRepairWslButtonId)),
+      instance_, nullptr);
   cancel_button_ = CreateWindowExW(
       0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0,
       0, window_,
@@ -316,8 +330,8 @@ bool ToolchainDoctorWindow::CreateControls() {
       orfs_edit_ == nullptr || pdk_edit_ == nullptr || cpu_edit_ == nullptr ||
       add_button_ == nullptr || duplicate_button_ == nullptr ||
       delete_button_ == nullptr || save_button_ == nullptr ||
-      diagnose_button_ == nullptr || cancel_button_ == nullptr ||
-      checks_ == nullptr || status_ == nullptr) {
+      diagnose_button_ == nullptr || repair_wsl_button_ == nullptr ||
+      cancel_button_ == nullptr || checks_ == nullptr || status_ == nullptr) {
     return false;
   }
   ListView_SetExtendedListViewStyle(
@@ -360,9 +374,11 @@ void ToolchainDoctorWindow::LayoutControls(int width, int height) const {
   MoveWindow(save_button_, margin + (profile_button_width + gap) * 3, y,
              profile_button_width, edit_height, TRUE);
   y += edit_height + gap;
-  const int run_button_width = (left_width - margin * 2 - gap) / 2;
+  const int run_button_width = (left_width - margin * 2 - gap * 2) / 3;
   MoveWindow(diagnose_button_, margin, y, run_button_width, edit_height, TRUE);
-  MoveWindow(cancel_button_, margin + run_button_width + gap, y,
+  MoveWindow(repair_wsl_button_, margin + run_button_width + gap, y,
+             run_button_width, edit_height, TRUE);
+  MoveWindow(cancel_button_, margin + (run_button_width + gap) * 2, y,
              run_button_width, edit_height, TRUE);
   RECT status_rectangle{};
   SendMessageW(status_, SB_GETRECT, 0,
@@ -796,6 +812,7 @@ void ToolchainDoctorWindow::SetBusy(bool busy) const {
   EnableWindow(delete_button_, !busy && settings_.profiles.size() > 1);
   EnableWindow(save_button_, !busy);
   EnableWindow(diagnose_button_, !busy);
+  EnableWindow(repair_wsl_button_, !busy);
   EnableWindow(cancel_button_, busy);
 }
 

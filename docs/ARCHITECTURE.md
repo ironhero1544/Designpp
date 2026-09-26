@@ -1,7 +1,7 @@
 # Design++ architecture
 
-> 1.0.0 배포 기준: [릴리스 노트](RELEASE_NOTES_1.0.0.md),
-> [설치 안내](INSTALL.md). 과거 단계의 검증 기록은 현재 완료 상태와 구분한다.
+> 1.0.0 설치 기준: [설치 안내](INSTALL.md). 과거 단계의 검증 기록은
+> 현재 완료 상태와 구분한다.
 
 ## Layout Setup editing and persistence
 
@@ -26,6 +26,13 @@ shown as ready. The result distinguishes an unavailable platform, missing native
 files, and an unregistered managed recipe. This keeps platform-specific policy in
 the application/adapter boundary and prevents the GUI from inferring verification
 support from names.
+
+The default toolchain profile supplies `~/.volare` as the editable OpenLane PDK
+root. Loading an older default profile with an empty PDK root fills this value
+in memory without rewriting settings or altering custom profiles. Doctor's PDK
+availability check probes both OpenLane PDK references and runnable ORFS
+platform directories in the selected WSL distribution. A successful ORFS
+platform check does not imply OpenLane PDK or DRC/LVS recipe support.
 
 ASAP7 installation and flow readiness are established by an engine run that
 loads the 7.5-track Liberty families, platform LEF, and `setRC.tcl`, then writes
@@ -606,18 +613,31 @@ The same managed bundle pins EQY to
 `eff96db01293848b993651caa52d747f191be02e` (2026-03-31) and builds its
 plugins against the bundle's Yosys. EQY is mandatory because the sky130hd
 configuration enables post-CTS equivalence checking.
-Preparation uses cached binaries only (`--max-jobs 0`, no remote builders or
-fallback). Missing cache entries require a separately approved source-build
-workflow, which is not yet exposed by this installer. Failed candidates and
-previous active checkouts are retained for diagnosis and rollback. A clone or
+Preparation defaults to cached binaries only (`--max-jobs 0`). Tool Check
+requires a separate confirmation before allowing ORFS source builds; that
+install plan uses one local Nix job and `max(1, available WSL logical CPUs - 1)`
+build cores. Both plans
+disable remote builders and fallback. A missing cache entry can therefore be
+built locally only after that confirmation. Failed candidate checkouts are
+removed under their provider's installation lock; startup or Tool Check cleanup
+recovers candidates left by abnormal termination. Completed environments and
+shared Nix store paths are preserved. A clone or
 validation failure preserves the active installation. ORFS probe and execution
-use offline/cache-only Nix flags; neither may download or compile missing tools.
+select the installed bundle's flake input mode and use offline/cache-only Nix
+flags; neither may download or compile missing tools. Schema 2 completion
+markers select local `path:` inputs for shallow nested submodules. Legacy
+markers retain their original `git+file` inputs and cached Nix closure.
 After preparation succeeds, the candidate receives a `.designpp-environment`
 completion marker containing its provider, display version, and exact root
 commit. Tool Check validates this marker and the live checkout commits without
 entering a Nix shell. A source checkout without a valid marker remains
 `preparation required`. The Nix inventory parser accepts both upstream
 `nix (Nix)` and Determinate Nix version output.
+The Doctor default profile derives its managed checkout paths from the
+compatibility catalog. Loading an existing default profile replaces only the
+two obsolete generated paths in memory when no managed environment is active;
+custom paths and other profiles remain editable and unchanged. This read does
+not rewrite the saved settings file or advance its revision.
 The preflight validation is read-only and does not invoke `make -n`: recursive
 ORFS Make recipes can still execute under dry-run mode and leave a partial
 lineage. Only the execution phase creates or mutates the backend workspace.
@@ -759,6 +779,39 @@ completion remain behind the structured `ExecutionProvider` boundary.
 ## Windows distribution
 
 NSIS packages the same Release payload as the ZIP into a per-user installation.
-It adds HKCU uninstall metadata and a Start Menu shortcut. Uninstall removes
-only enumerated package files; it does not touch Libraries, settings, WSL or PDKs.
+It offers separate components for Start Menu shortcuts, a desktop shortcut,
+and HKCU App Paths registration. Only the application payload is mandatory;
+Start Menu is selected by default. App Paths resolves the executable through
+the Windows shell without changing the user's global PATH. Reinstallation
+also removes previously owned components that the user deselects. Uninstall
+removes only enumerated package files and installer-owned registration; it does not touch Libraries,
+settings, WSL or PDKs.
 EDA installation and environment activation remain application operations.
+The x64 Release executable statically links the MSVC C++ runtime so initial
+Library Manager launch does not depend on a machine-wide Visual C++
+Redistributable installation. The bundled WebView2 loader resolves the shared
+Evergreen Runtime when an embedded editor is opened. NSIS checks the Runtime
+registration before copying application files and downloads Microsoft's
+Evergreen bootstrapper only when it is absent. A failed download, install, or
+post-install check stops setup before uninstall metadata is registered. The
+portable ZIP leaves Runtime preparation to Tool Check.
+
+WSL bootstrap is an ordered contract. The elevated Windows step installs Ubuntu,
+updates WSL before Linux initialization,
+starts a newly installed distribution once as root, provisions its non-root
+`designpp` default user, converts it to WSL2, and selects it as the default
+distribution. Existing Ubuntu user configuration is preserved. The following
+non-elevated probe names Ubuntu explicitly. A pending Windows restart stops the
+sequence with exit code 3010 rather than allowing an ambiguous default-distro
+probe to return `0xffffffff`. The GUI treats 3010 as a resumable restart state,
+offers an immediate Windows restart, and retains a per-user bootstrap marker so
+the next setup run provisions only the Ubuntu installation that Design++ began.
+The final WSL2 probe requires an explicit marker from a WSL2 kernel. A zero exit
+without that marker or output containing `E_UNEXPECTED` is a setup failure.
+Doctor diagnoses the same error and routes its repair button to the existing
+Tool Check WSL setup action.
+Before setup, Library Manager discovers WSL distributions outside the UI thread.
+An explicit choice selects an existing WSL2 distribution or a separately named
+`DesignPlusPlus` Ubuntu; discovery errors do not silently choose an existing
+distribution. Existing Linux files and users are left intact. The selected
+distribution becomes the Windows default only after its WSL2 probe succeeds.

@@ -6,7 +6,9 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
+#include <utility>
 
 #include "designpp/application/toolchain_environment_service.h"
 #include "designpp/application/toolchain_profile_store.h"
@@ -73,8 +75,12 @@ Assert::IsTrue(core::ValidateToolchainSettings(settings).Ok());
 Assert::AreEqual(std::string("default"), settings.selected_profile_id);
 Assert::AreEqual<std::size_t>(1U, settings.profiles.size());
 Assert::IsTrue(settings.profiles.front().cpu_budget >= 1);
-Assert::AreEqual(std::string("~/.designpp/toolchains/openlane2"),
-                 settings.profiles.front().openlane_root);
+Assert::AreEqual(
+    std::string("~/.designpp/toolchains/environments/openlane2-2.3.10"),
+    settings.profiles.front().openlane_root);
+Assert::AreEqual(std::string("~/.designpp/toolchains/environments/orfs-26Q2"),
+                 settings.profiles.front().orfs_root);
+Assert::AreEqual(std::string("~/.volare"), settings.profiles.front().pdk_root);
 }  // namespace designpp::tests
 
 TEST_METHOD(RoundTripPreservesDistributionPathsAndCpuBudget) {
@@ -94,6 +100,57 @@ TEST_METHOD(RoundTripPreservesDistributionPathsAndCpuBudget) {
                    loaded.Value().profiles.front().pdk_root);
   Assert::AreEqual<std::uint32_t>(3,
                                   loaded.Value().profiles.front().cpu_budget);
+}
+
+TEST_METHOD(LegacyDefaultRootsUpdateInMemoryWithoutReplacingUserPaths) {
+  TemporaryProfileDirectory directory;
+  application::ToolchainProfileStore store(directory.SettingsPath());
+  core::ToolchainSettings settings =
+      application::ToolchainProfileStore::CreateDefaults();
+  settings.profiles.front().openlane_root = "~/.designpp/toolchains/openlane2";
+  settings.profiles.front().orfs_root = "~/.designpp/toolchains/orfs";
+  settings.profiles.front().pdk_root.clear();
+  core::ToolchainProfile custom = settings.profiles.front();
+  custom.id = "custom";
+  custom.name = "Custom paths";
+  custom.orfs_root = "~/my-orfs";
+  settings.profiles.push_back(custom);
+  Assert::IsTrue(store.Save(settings).Ok());
+  std::ifstream original_file(directory.SettingsPath(), std::ios::binary);
+  const std::string original((std::istreambuf_iterator<char>(original_file)),
+                             {});
+  original_file.close();
+
+  auto loaded = store.Load();
+  Assert::IsTrue(loaded.Ok());
+  Assert::AreEqual(
+      std::string("~/.designpp/toolchains/environments/openlane2-2.3.10"),
+      loaded.Value().profiles.front().openlane_root);
+  Assert::AreEqual(std::string("~/.designpp/toolchains/environments/orfs-26Q2"),
+                   loaded.Value().profiles.front().orfs_root);
+  Assert::AreEqual(std::string("~/.volare"),
+                   loaded.Value().profiles.front().pdk_root);
+  Assert::AreEqual(std::string(), loaded.Value().profiles.back().pdk_root);
+  Assert::AreEqual(std::string("~/.designpp/toolchains/openlane2"),
+                   loaded.Value().profiles.back().openlane_root);
+  Assert::AreEqual(std::string("~/my-orfs"),
+                   loaded.Value().profiles.back().orfs_root);
+  std::ifstream unchanged_file(directory.SettingsPath(), std::ios::binary);
+  const std::string unchanged((std::istreambuf_iterator<char>(unchanged_file)),
+                              {});
+  unchanged_file.close();
+  Assert::AreEqual(original, unchanged);
+
+  auto edited = std::move(loaded).Value();
+  edited.profiles.front().orfs_root = "~/manually-selected-orfs";
+  edited.profiles.front().pdk_root = "~/my-pdks";
+  Assert::IsTrue(store.Save(edited).Ok());
+  auto reopened = store.Load();
+  Assert::IsTrue(reopened.Ok());
+  Assert::AreEqual(std::string("~/manually-selected-orfs"),
+                   reopened.Value().profiles.front().orfs_root);
+  Assert::AreEqual(std::string("~/my-pdks"),
+                   reopened.Value().profiles.front().pdk_root);
 }
 
 TEST_METHOD(UnsafePathsAndMissingSelectionAreRejected) {

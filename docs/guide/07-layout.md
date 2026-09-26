@@ -12,7 +12,12 @@ OpenLane 2 또는 ORFS로 물리 설계를 수행합니다. 저장된 RTL, top m
 1. 대상 Cell의 **Layout** View를 엽니다.
 2. PDK 관리 창에서 대상 Cell을 확인하고 backend와 설치된 PDK 항목을 확인합니다.
    저장/적용 후 같은 Cell의 Layout에서 선택이 반영됐는지 확인합니다.
+
+   ![Timer Cell의 PDK 관리 창에서 설치 상태와 DRC/LVS 지원 범위를 확인하는 화면](../images/pdk-manager-live.jpg)
+
 3. Layout의 **Setup**에서 **Backend**, **PDK**, 표준 셀 라이브러리 선택을 확인합니다.
+   Setup이 비활성이고 PDK 검색 입력 부족이 표시되면 **PDK 경로 관리**와
+   **Tool Check**에서 경로를 확인한 뒤 다시 엽니다.
 4. clock port와 period를 설정합니다. clock port가 여러 개면 표시된 안내에 따라
    세미콜론으로 구분합니다. PnR/Signoff SDC를 쓰는 경우 해당 제약도 확인합니다.
 5. Core utilization, Placement density, Die/Core area 등 필요한 항목만 조정합니다.
@@ -24,6 +29,9 @@ OpenLane 2 또는 ORFS로 물리 설계를 수행합니다. 저장된 RTL, top m
 1. **Generate / Update Layout**을 누릅니다.
 2. probe → 입력 준비 → 도구 실행 순서의 상태와 Library Manager Output을 확인합니다.
 3. **Summary**에서 상태와 메트릭, **Runs**에서 실행 기록을 확인합니다.
+
+   ![Timer Layout의 성공한 ORFS 실행 요약과 Run ID](../images/layout-summary-live.jpg)
+
 4. **Reports / Artifacts**에서 원본 보고서와 생성물을 확인합니다.
 5. 호환되는 결과가 있으면 **Open Layout**으로 viewer를 엽니다.
    파일 생성 성공과 실제 viewer 실행 가능 여부는 별도입니다.
@@ -44,6 +52,8 @@ OpenLane 2 또는 ORFS로 물리 설계를 수행합니다. 저장된 RTL, top m
 - **Run Through**: 선택 단계까지 실행합니다.
 - **Rebuild From**: 선택 단계부터 다시 수행할 실행을 요청합니다.
 - **Open in OpenROAD**: 사용 가능한 단계 결과를 OpenROAD에서 확인합니다.
+
+![ORFS 단계별 실행 창에서 완료 상태와 checkpoint를 확인하는 화면](../images/physical-flow-stages-live.jpg)
 
 checkpoint는 source Run, 입력과 환경이 호환될 때만 재사용합니다. 환경이나
 제약을 바꾼 뒤 이전 결과를 강제로 연결하지 않습니다.

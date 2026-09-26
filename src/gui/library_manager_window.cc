@@ -4,6 +4,7 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include <windowsx.h>
 
@@ -28,6 +29,20 @@ constexpr int kMaximumLogCharacters = 2'000'000;
 constexpr UINT_PTR kBrowserFilterTimer = 51;
 constexpr UINT kBrowserFilterDelayMilliseconds = 120;
 constexpr std::size_t kBrowserPaneCount = 3U;
+
+bool ConfirmOrfsSourceBuild(HWND owner) {
+  return MessageBoxW(
+             owner,
+             L"이 ORFS 버전은 일부 바이너리가 Nix 캐시에 없어 로컬 소스 "
+             L"빌드가 필요할 수 있습니다. Yosys, OpenROAD와 의존 도구를 "
+             L"WSL에서 컴파일하며 수 시간과 상당한 디스크 공간이 들 수 "
+             L"있습니다. 동시에 한 작업을 빌드하며 WSL에서 사용할 수 있는 "
+             L"논리 CPU가 둘 이상이면 하나를 남깁니다. "
+             L"취소해도 현재 활성 환경은 유지됩니다.\n\n"
+             L"소스 빌드를 허용하고 계속하시겠습니까?",
+             L"ORFS 소스 빌드 허용",
+             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+}
 
 enum class UiEventKind {
   kOutput,
@@ -1953,7 +1968,8 @@ void LibraryManagerWindow::OpenToolCheck() {
             if (index)
               StartToolchainManagement(
                   *index, application::ToolchainManagementAction::kRollback);
-          })) {
+          },
+          [this]() { StartBuildCacheCleanup(); })) {
     MessageBoxW(window_, L"Tool Check 창을 만들 수 없습니다.",
                 L"Design++ Library Manager", MB_OK | MB_ICONERROR);
     return;
@@ -2030,8 +2046,9 @@ void LibraryManagerWindow::StartToolInstall(std::size_t tool_index) {
   if (operation_ != Operation::kIdle || tool_index >= tools_.size()) {
     return;
   }
+  const runtime::ToolId tool_id = tools_[tool_index].id;
   std::vector<runtime::SetupStep> steps =
-      runtime::BuildToolInstallSteps(tools_[tool_index].id);
+      runtime::BuildToolInstallSteps(tool_id);
   if (steps.empty()) {
     const std::wstring guidance =
         L"이 항목은 Design++가 직접 설치하지 않는 선택적 외부 "
@@ -2047,6 +2064,11 @@ void LibraryManagerWindow::StartToolInstall(std::size_t tool_index) {
   if (MessageBoxW(window_, question.c_str(), L"도구 설치 / 업데이트",
                   MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
     return;
+  }
+  if (tool_id == runtime::ToolId::kOrfs) {
+    if (!ConfirmOrfsSourceBuild(window_)) return;
+    steps = runtime::BuildToolInstallSteps(
+        tool_id, runtime::OrfsBuildPolicy::kAllowLocalBuild);
   }
   operation_ = Operation::kInstallingTool;
   setup_steps_ = std::move(steps);
@@ -2156,20 +2178,109 @@ void LibraryManagerWindow::StartWslSetup() {
   }
   const int answer = MessageBoxW(
       window_,
-      L"WSL과 Ubuntu 설치 단계만 관리자 권한으로 실행합니다. Library "
-      L"Manager는 일반 권한으로 유지됩니다. 계속하시겠습니까?",
+      L"설치된 WSL 배포판을 확인한 뒤 기존 환경 사용 또는 새 Design++ 전용 "
+      L"Ubuntu 설치를 선택합니다. 설치·업데이트 단계만 관리자 권한으로 "
+      L"실행합니다. 계속하시겠습니까?",
       L"WSL2 자동 설정", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
   if (answer != IDYES) {
     return;
   }
   operation_ = Operation::kSettingUpWsl;
-  setup_steps_ = runtime::BuildWslSetupSteps();
+  discovering_wsl_ = true;
+  setup_steps_.clear();
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
-  ShowDeterminateProgress(setup_steps_.size());
+  ShowIndeterminateProgress();
   SetBusyControls(true);
-  AppendLog(L"\r\n=== WSL2 자동 설정 시작 ===\r\n");
+  AppendLog(L"\r\n=== 설치된 WSL 배포판 확인 ===\r\n");
+  runtime::ProcessRequest discover;
+  discover.executable = L"wsl.exe";
+  discover.arguments = {L"--list", L"--verbose"};
+  StartTask(std::move(discover), L"WSL 배포판 검색",
+            runtime::OutputEncoding::kUtf16LittleEndian, std::nullopt);
+}
+
+void LibraryManagerWindow::ChooseWslSetup(
+    const runtime::ProcessResult& discovery) {
+  discovering_wsl_ = false;
+  if (operation_ == Operation::kCancelling || discovery.cancelled) {
+    FinishOperation(L"WSL2 설정이 취소되었습니다.");
+    return;
+  }
+  std::vector<application::WslDistribution> distributions;
+  if (discovery.started && discovery.error_message.empty() &&
+      discovery.exit_code == 0) {
+    auto parsed = application::ParseWslDistributionList(discovery.output);
+    if (parsed.Ok()) distributions = std::move(parsed).Value();
+  }
+  if (distributions.empty()) {
+    const int answer = MessageBoxW(
+        window_,
+        L"설치된 WSL 배포판을 찾지 못했거나 목록을 읽을 수 없습니다. "
+        L"새 Ubuntu 설치를 진행하시겠습니까? 기존 배포판이 있다면 "
+        L"취소하고 WSL 상태를 확인하세요.",
+        L"WSL 환경 선택", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2);
+    if (answer != IDYES) {
+      FinishOperation(L"WSL2 설정이 취소되었습니다.");
+      return;
+    }
+    setup_steps_ = runtime::BuildWslSetupSteps();
+  } else {
+    std::vector<std::wstring> labels;
+    labels.reserve(distributions.size() + 1);
+    labels.push_back(L"새 Design++ 전용 Ubuntu 만들기");
+    for (const auto& distribution : distributions) {
+      const std::wstring name = Utf8ToWide(distribution.name);
+      labels.push_back(L"기존 " + name + L" 사용 (WSL" +
+                       std::to_wstring(distribution.version) + L")");
+    }
+    std::vector<TASKDIALOG_BUTTON> buttons;
+    buttons.reserve(labels.size());
+    for (std::size_t index = 0; index < labels.size(); ++index) {
+      buttons.push_back(
+          {static_cast<int>(1000 + index), labels[index].c_str()});
+    }
+    TASKDIALOGCONFIG dialog{};
+    dialog.cbSize = sizeof(dialog);
+    dialog.hwndParent = window_;
+    dialog.dwFlags = TDF_USE_COMMAND_LINKS;
+    dialog.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    dialog.pszWindowTitle = L"WSL 환경 선택";
+    dialog.pszMainInstruction = L"Design++에서 사용할 WSL 환경을 선택하세요";
+    dialog.pszContent =
+        L"새 환경은 별도 배포판을 만듭니다. 기존 환경을 고르면 "
+        L"Linux 파일은 변경하지 않지만 선택한 배포판이 Windows의 기본값이 "
+        L"됩니다.";
+    dialog.cButtons = static_cast<UINT>(buttons.size());
+    dialog.pButtons = buttons.data();
+    int selected = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&dialog, &selected, nullptr, nullptr)) ||
+        selected == IDCANCEL) {
+      FinishOperation(L"WSL2 설정이 취소되었습니다.");
+      return;
+    }
+    if (selected == 1000) {
+      setup_steps_ = runtime::BuildDedicatedUbuntuSetupSteps();
+    } else {
+      const std::size_t index = static_cast<std::size_t>(selected - 1001);
+      if (index >= distributions.size() || distributions[index].version != 2) {
+        MessageBoxW(window_,
+                    L"기존 환경은 WSL2 배포판만 사용할 수 있습니다. "
+                    L"WSL1은 먼저 별도 변환이 필요합니다.",
+                    L"WSL 환경 선택", MB_OK | MB_ICONWARNING);
+        FinishOperation(L"WSL2 설정이 취소되었습니다.");
+        return;
+      }
+      setup_steps_ = runtime::BuildExistingWslSetupSteps(
+          Utf8ToWide(distributions[index].name));
+    }
+  }
+  completed_work_ = 0;
+  failed_work_ = 0;
+  next_setup_step_ = 0;
+  ShowDeterminateProgress(setup_steps_.size());
+  AppendLog(L"=== 선택한 WSL2 환경 설정 시작 ===\r\n");
   StartNextSetupStep();
 }
 
@@ -2188,14 +2299,40 @@ void LibraryManagerWindow::StartToolchainSetup() {
   if (answer != IDYES) {
     return;
   }
+  if (!ConfirmOrfsSourceBuild(window_)) return;
   operation_ = Operation::kInstallingToolchain;
-  setup_steps_ = runtime::BuildCompleteToolSetupSteps();
+  setup_steps_ = runtime::BuildCompleteToolSetupSteps(
+      runtime::OrfsBuildPolicy::kAllowLocalBuild);
   next_setup_step_ = 0;
   completed_work_ = 0;
   failed_work_ = 0;
   ShowDeterminateProgress(setup_steps_.size());
   SetBusyControls(true);
   AppendLog(L"\r\n=== 전체 EDA Toolchain 설치 / 업데이트 시작 ===\r\n");
+  StartNextSetupStep();
+}
+
+void LibraryManagerWindow::StartBuildCacheCleanup() {
+  if (operation_ != Operation::kIdle) {
+    return;
+  }
+  const int answer = MessageBoxW(
+      window_,
+      L"Design++ 설치가 남긴 OpenLane 2/ORFS 실패 후보 디렉터리를 "
+      L"정리합니다. 설치 중인 다른 프로세스가 있으면 중단합니다.\n\n"
+      L"완료된 환경과 공유 Nix 저장소는 유지합니다. 계속하시겠습니까?",
+      L"빌드 캐시 정리", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+  if (answer != IDYES) {
+    return;
+  }
+  operation_ = Operation::kCleaningBuildCache;
+  setup_steps_ = runtime::BuildBuildCacheCleanupSteps();
+  next_setup_step_ = 0;
+  completed_work_ = 0;
+  failed_work_ = 0;
+  ShowDeterminateProgress(setup_steps_.size());
+  SetBusyControls(true);
+  AppendLog(L"\r\n=== Design++ 빌드 잔여물 정리 시작 ===\r\n");
   StartNextSetupStep();
 }
 
@@ -2227,9 +2364,11 @@ void LibraryManagerWindow::StartNextSetupStep() {
                                operation_ == Operation::kRemovingToolchain ||
                                operation_ == Operation::kInstallingTool ||
                                operation_ == Operation::kRemovingTool;
+    const bool cleaned_cache = operation_ == Operation::kCleaningBuildCache;
     FinishOperation(
         failed_work_ == 0
-            ? L"설정 작업이 완료되었습니다."
+            ? (cleaned_cache ? L"빌드 잔여물 정리가 완료되었습니다."
+                             : L"설정 작업이 완료되었습니다.")
             : L"설정 작업이 완료되었지만 일부 단계가 실패했습니다.");
     if (recheck_tools) {
       AppendLog(L"설치 결과를 자동으로 다시 검사합니다.\r\n");
@@ -2242,14 +2381,16 @@ void LibraryManagerWindow::StartNextSetupStep() {
   SetStatus(step.title);
   AppendLog(L"\r\n--- " + step.title + L" ---\r\n");
   StartTask(step.request, step.title, step.output_encoding, std::nullopt,
-            step.requires_elevation);
+            step.requires_elevation, step.restart_required_exit_code,
+            step.required_output_marker);
 }
 
-void LibraryManagerWindow::StartTask(runtime::ProcessRequest request,
-                                     std::wstring title,
-                                     runtime::OutputEncoding output_encoding,
-                                     std::optional<std::size_t> tool_index,
-                                     bool requires_elevation) {
+void LibraryManagerWindow::StartTask(
+    runtime::ProcessRequest request, std::wstring title,
+    runtime::OutputEncoding output_encoding,
+    std::optional<std::size_t> tool_index, bool requires_elevation,
+    std::optional<std::uint32_t> restart_required_exit_code,
+    std::string required_output_marker) {
   const std::uint64_t task_id = next_task_id_++;
   AppendLog(FormatCommand(request));
   const std::shared_ptr<EventChannel> channel = event_channel_;
@@ -2318,6 +2459,8 @@ void LibraryManagerWindow::StartTask(runtime::ProcessRequest request,
 
   active_tasks_.push_back(
       {task_id, tool_index, std::move(title), output_encoding,
+       restart_required_exit_code, requires_elevation,
+       std::move(required_output_marker),
        std::make_unique<runtime::ProcessSession>(std::move(launch.session))});
 }
 
@@ -2449,11 +2592,50 @@ void LibraryManagerWindow::HandleTaskCompletion(
   const std::optional<std::size_t> tool_index = task_iterator->tool_index;
   const runtime::OutputEncoding encoding = task_iterator->output_encoding;
   const std::wstring title = task_iterator->title;
+  const std::optional<std::uint32_t> restart_required_exit_code =
+      task_iterator->restart_required_exit_code;
+  const bool completion_contains_output =
+      task_iterator->completion_contains_output;
+  const bool was_discovery = discovering_wsl_ && title == L"WSL 배포판 검색";
+  const std::string required_output_marker =
+      task_iterator->required_output_marker;
   active_tasks_.erase(task_iterator);
   decoder_remainders_.erase(task_id);
+  if (was_discovery) {
+    ChooseWslSetup(result);
+    return;
+  }
 
-  const bool succeeded = result.started && !result.cancelled &&
-                         result.error_message.empty() && result.exit_code == 0;
+  if (completion_contains_output && !result.output.empty()) {
+    std::string remainder;
+    const std::wstring decoded =
+        DecodeOutput(result.output, encoding, &remainder);
+    if (!decoded.empty()) {
+      AppendLog(L"[" + title + L"] " + decoded);
+      if (decoded.back() != L'\n') {
+        AppendLog(L"\r\n");
+      }
+    }
+  }
+
+  const bool marker_present =
+      required_output_marker.empty() ||
+      result.output.find(required_output_marker) != std::string::npos;
+  const bool unexpected_wsl_error =
+      !required_output_marker.empty() &&
+      result.output.find("E_UNEXPECTED") != std::string::npos;
+  const bool succeeded =
+      result.started && !result.cancelled && result.error_message.empty() &&
+      result.exit_code == 0 && marker_present && !unexpected_wsl_error;
+  if (!required_output_marker.empty() && !succeeded && result.exit_code == 0) {
+    AppendLog(
+        L"[WSL2 검사 오류] 정상 실행 표식이 없거나 WSL이 "
+        L"E_UNEXPECTED를 반환했습니다. WSL 업데이트 후 재검사하세요.\r\n");
+  }
+  const bool restart_required = result.started && !result.cancelled &&
+                                result.error_message.empty() &&
+                                restart_required_exit_code.has_value() &&
+                                result.exit_code == *restart_required_exit_code;
   if (!succeeded && !result.error_message.empty()) {
     AppendLog(L"[" + title + L"] 시작 오류: " + result.error_message + L"\r\n");
   }
@@ -2483,7 +2665,7 @@ void LibraryManagerWindow::HandleTaskCompletion(
         ++failed_work_;
       }
     }
-  } else if (!succeeded) {
+  } else if (!succeeded && !restart_required) {
     ++failed_work_;
     if (!result.error_message.empty()) {
       AppendLog(L"[오류] " + result.error_message + L"\r\n");
@@ -2494,6 +2676,30 @@ void LibraryManagerWindow::HandleTaskCompletion(
   SendMessageW(progress_, PBM_SETPOS, static_cast<WPARAM>(completed_work_), 0);
   AppendLog(L"[" + title + L"] 종료 코드 " + std::to_wstring(result.exit_code) +
             (result.cancelled ? L" (취소됨)\r\n" : L"\r\n"));
+
+  if (restart_required) {
+    const wchar_t* message =
+        L"WSL2와 Ubuntu 설치를 계속하려면 Windows를 재부팅해야 합니다. "
+        L"지금 재부팅하시겠습니까?\n\n"
+        L"재부팅한 뒤 Design++에서 WSL2 자동 설정을 다시 실행하면 "
+        L"중단된 초기화를 이어갑니다.";
+    AppendLog(L"[재부팅 필요] " + std::wstring(message) + L"\r\n");
+    FinishOperation(L"재부팅 후 WSL2 자동 설정을 다시 실행하세요.");
+    const int answer =
+        MessageBoxW(window_, message, L"WSL2 설정 - 재부팅 필요",
+                    MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2);
+    if (answer == IDYES) {
+      const HINSTANCE launch = ShellExecuteW(window_, L"open", L"shutdown.exe",
+                                             L"/r /t 0", nullptr, SW_HIDE);
+      if (reinterpret_cast<INT_PTR>(launch) <= 32) {
+        MessageBoxW(window_,
+                    L"Windows 재부팅 명령을 시작하지 못했습니다. 작업을 "
+                    L"저장하고 Windows를 직접 재부팅하세요.",
+                    L"재부팅 시작 오류", MB_OK | MB_ICONERROR);
+      }
+    }
+    return;
+  }
 
   if (operation_ == Operation::kCancelling) {
     if (active_tasks_.empty()) {
@@ -2516,6 +2722,7 @@ void LibraryManagerWindow::HandleTaskCompletion(
 
 void LibraryManagerWindow::FinishOperation(std::wstring status) {
   operation_ = Operation::kIdle;
+  discovering_wsl_ = false;
   setup_steps_.clear();
   SetBusyControls(false);
   SetStatus(status);

@@ -67,7 +67,11 @@ Assert::IsTrue(command.arguments[1].find(L"--override-input openroad") !=
                std::wstring::npos);
 Assert::IsTrue(command.arguments[1].find(L"--override-input yosys") !=
                std::wstring::npos);
-Assert::IsTrue(command.arguments[1].find(L"tools/yosys?submodules=1") !=
+Assert::IsTrue(command.arguments[1].find(L"input_mode=path") !=
+               std::wstring::npos);
+Assert::IsTrue(command.arguments[1].find(L"git+file://$root/tools/yosys") !=
+               std::wstring::npos);
+Assert::IsTrue(command.arguments[1].find(L"path:$root/tools/yosys") !=
                std::wstring::npos);
 Assert::AreEqual(std::size_t(0), command.environment.size());
 Assert::AreEqual(std::wstring(L"~/custom/orfs"), command.arguments.back());
@@ -117,10 +121,14 @@ TEST_METHOD(OrfsFlakeExecutionDoesNotReuseOpenLaneShellOrDryRunMake) {
                      L"--no-write-lock-file --override-input yosys") !=
                  std::wstring::npos);
   Assert::IsTrue(plan.Value().execute.arguments[1].find(
-                     L"git+file://$root/tools/yosys?submodules=1") !=
-                 std::wstring::npos);
+                     L"path:$root/tools/yosys") != std::wstring::npos);
   Assert::IsTrue(plan.Value().execute.arguments[1].find(
-                     L"git+file://$root/tools/eqy") != std::wstring::npos);
+                     L"path:$root/tools/OpenROAD") != std::wstring::npos);
+  Assert::IsTrue(plan.Value().execute.arguments[1].find(
+                     L"path:$root/tools/eqy") != std::wstring::npos);
+  Assert::IsTrue(plan.Value().execute.arguments[1].find(
+                     L"--override-input yosys \"$yosys_input\"") !=
+                 std::wstring::npos);
   Assert::IsTrue(plan.Value().execute.arguments[1].find(L"openlane_root") ==
                  std::wstring::npos);
   Assert::IsTrue(plan.Value().execute.arguments[1].find(

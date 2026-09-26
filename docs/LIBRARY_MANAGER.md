@@ -48,15 +48,23 @@ Tool Check 창에는 로그 컨트롤을 두지 않는다. 도구 검사, WSL2 �
 
 ## WSL2 자동 설정
 
-사용자 확인 후 관리자 권한이 없으면 UAC를 통해 Design++를 다시 실행한다.
-관리자 프로세스는 다음 작업을 순차 실행한다.
+사용자 확인 후 WSL 구성 명령만 UAC로 실행하며 Library Manager는 일반 권한을
+유지한다. 다음 작업을 순차 실행한다.
 
 1. 설치된 배포판을 확인하고 Ubuntu가 없을 때만 `wsl --install` 실행
-2. 새 배포판의 기본 버전을 WSL2로 설정
-3. Ubuntu에서 Linux 커널 실행 확인
+2. 새 Ubuntu를 root로 한 번 시작해 배포판 파일 시스템 초기화
+3. 새 설치에 `designpp` Linux 사용자를 만들고 기본 사용자로 지정
+4. Ubuntu를 WSL2로 변환하고 기본 배포판으로 지정
+5. `--distribution Ubuntu`를 명시해 Linux 커널 실행 확인
 
 Windows 선택 기능을 처음 활성화하는 시스템에서는 재부팅이 필요할 수 있다.
-이 경우 재부팅 후 Library Manager를 다시 열어 설정과 도구 검사를 계속한다.
+Ubuntu 초기화가 불가능하면 종료 코드 3010을 재부팅 필요 상태로 처리하고
+**지금 재부팅 / 나중에** 알림을 표시한다. pending 표식은 성공적인 초기화까지
+유지되므로 재부팅 뒤 WSL2 자동 설정을 다시 실행하면 새 설치 절차가 이어진다.
+새 설치는 기본 WSL 버전을 먼저 2로 지정하므로 설치 직후 다시 변환하지 않는다.
+기본 사용자 적용을 위한 Ubuntu 종료 실패는 설치 실패로 오인하지 않으며 관리자
+단계의 완료 출력은 Library Manager Output에 함께 보존한다.
+기존 Ubuntu의 사용자 설정은 덮어쓰지 않는다.
 
 ## Toolchain 설치 및 업데이트
 
@@ -85,6 +93,11 @@ Tool Check에서 한 행을 선택하면 `선택 설치 / 업데이트` 또는 `
 패키지, Design++ cocotb 가상환경, OpenLane 2 및 ORFS checkout을 제거하지만
 공유 Nix provider와 외부 Docker Desktop은 유지한다.
 
+**빌드 캐시 정리**는 OpenLane 2·ORFS 설치 잠금을 먼저 확보한 뒤 Design++가
+남긴 실패 후보 checkout만 제거한다. 설치 중이면 중단하고, 완료된 환경과
+공유 Nix 저장소는 건드리지 않는다. 실행 결과는 Library Manager Output에
+표시한다.
+
 | 도구 유형 | 개별 설치 | 개별 삭제 |
 |---|---|---|
 | APT 도구 | 해당 패키지만 설치/업데이트 | 해당 패키지만 `apt remove` |
@@ -110,8 +123,10 @@ Ubuntu의 `netgen` 패키지는 LVS 도구가 아니라 3D 메시 생성기이�
 
 WSL Windows 기능 설정만 UAC가 필요한 elevated child process로 실행한다.
 Library Manager GUI 전체를 관리자 권한으로 다시 실행하지 않으므로 일반 권한
-메인 창이 중복 생성되지 않는다. elevated 단계의 명령과 종료 코드는 메인
-Output에 기록하고, 일반 WSL 설치 단계의 stdout/stderr는 실시간 스트리밍한다.
+메인 창이 중복 생성되지 않는다. 관리자 단계는 `Design++ 관리자 설정`
+PowerShell 창을 표시해 Windows/WSL 설치 진행을 직접 확인할 수 있게 한다.
+elevated 단계의 명령과 종료 코드는 메인 Output에도 기록하고, 일반 WSL 설치
+단계의 stdout/stderr는 실시간 스트리밍한다.
 
 현재 기본 배포판을 대상으로 실행한다. 배포판 선택, OpenLane/ORFS 설치 경로,
 PDK root 및 Toolchain Profile 저장은 `PROJECT_PLAN.md` Phase 1의 후속 작업이다.

@@ -19,6 +19,7 @@
 #include "designpp/application/library_service.h"
 #include "designpp/application/recent_workspace_store.h"
 #include "designpp/application/toolchain_environment_service.h"
+#include "designpp/application/wsl_distribution_service.h"
 #include "designpp/gui/dpi.h"
 #include "designpp/gui/pdk_manager_window.h"
 #include "designpp/gui/tool_check_window.h"
@@ -55,6 +56,7 @@ class LibraryManagerWindow final {
     kRemovingToolchain,
     kInstallingTool,
     kRemovingTool,
+    kCleaningBuildCache,
     kCancelling,
   };
 
@@ -72,6 +74,9 @@ class LibraryManagerWindow final {
     std::optional<std::size_t> tool_index;
     std::wstring title;
     runtime::OutputEncoding output_encoding;
+    std::optional<std::uint32_t> restart_required_exit_code;
+    bool completion_contains_output = false;
+    std::string required_output_marker;
     std::unique_ptr<runtime::ProcessSession> session;
   };
 
@@ -138,13 +143,17 @@ class LibraryManagerWindow final {
                                 application::ToolchainManagementAction action);
   void StartToolchainRemove();
   void StartWslSetup();
+  void ChooseWslSetup(const runtime::ProcessResult& discovery);
   void StartToolchainSetup();
+  void StartBuildCacheCleanup();
   void StartPendingToolProbes();
   void StartNextSetupStep();
-  void StartTask(runtime::ProcessRequest request, std::wstring title,
-                 runtime::OutputEncoding output_encoding,
-                 std::optional<std::size_t> tool_index,
-                 bool requires_elevation = false);
+  void StartTask(
+      runtime::ProcessRequest request, std::wstring title,
+      runtime::OutputEncoding output_encoding,
+      std::optional<std::size_t> tool_index, bool requires_elevation = false,
+      std::optional<std::uint32_t> restart_required_exit_code = std::nullopt,
+      std::string required_output_marker = {});
   void CancelOperation();
   void HandleQueuedEvents();
   void HandleTaskCompletion(std::uint64_t task_id,
@@ -212,6 +221,7 @@ class LibraryManagerWindow final {
   std::size_t pending_library_operations_ = 0;
   std::size_t maximum_parallel_probes_ = 1;
   std::uint64_t next_task_id_ = 1;
+  bool discovering_wsl_ = false;
 };
 
 }  // namespace designpp::gui

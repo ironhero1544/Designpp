@@ -17,8 +17,10 @@ Yosys, 설계에 맞는 Technology Liberty가 필요합니다.
    회로 탐색 형태와 후속 입력이 달라질 수 있습니다.
 5. **Run Synthesis**를 누릅니다. 로그는 Library Manager Output에서도 확인할 수 있습니다.
 6. 완료 후 **Problems**, **Report**, **Runs**를 확인합니다.
+   ![Timer 합성 Report에서 Yosys 결과와 회로 규모를 확인하는 화면](../images/synthesis-report-live.jpg)
 7. **Readable / Gate** 표시와 계층 탐색으로 결과 구조를 살펴봅니다.
    **Reports**, **Artifacts**, **Script**로 원본 결과와 실행 입력을 확인합니다.
+   ![Timer 합성 회로와 Technology Liberty 선택을 보여 주는 화면](../images/synthesis-live.jpg)
 
 ## 정상 결과
 

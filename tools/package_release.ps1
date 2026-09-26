@@ -37,6 +37,7 @@ $files = @(
   "Design++.exe",
   "WebView2Loader.dll",
   "WebView2-LICENSE.txt",
+  "WebView2-NOTICE.txt",
   "THIRD_PARTY_NOTICES.md"
 )
 foreach ($file in $files) {
@@ -55,7 +56,9 @@ Copy-Item -LiteralPath (Join-Path $repository "docs\INSTALL.md") -Destination $s
 
 Copy-Item -LiteralPath (Join-Path $repository "README.md") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository "README_ko.md") -Destination $stage
+Copy-Item -LiteralPath (Join-Path $repository "LICENSE") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository "docs") -Destination $stage -Recurse
+Copy-Item -LiteralPath (Join-Path $repository "licenses") -Destination $stage -Recurse
 
 $manifest = [ordered]@{
   schema_version = 1

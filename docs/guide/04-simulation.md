@@ -15,6 +15,7 @@
    Testbench Top은 테스트를 수행하는 module이며 DUT module과 다를 수 있습니다.
 4. 파형이 필요하면 **Generate VCD / Generate waveform**을 켭니다.
    표시되는 형식 선택은 backend 지원 범위를 따릅니다.
+   ![Timer Testbench에서 simulator, top module과 파형 생성을 설정하는 화면](../images/simulation-setup-live.jpg)
 5. 변경 사항을 저장한 뒤 **Run Testbench**를 누릅니다.
 6. **Tests**, **Runs**, **Artifacts**, **Output**에서 실행 결과를 확인합니다.
 7. 유효한 파형이 생성되면 **Open Waveform**으로 GTKWave를 엽니다.

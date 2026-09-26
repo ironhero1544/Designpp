@@ -87,7 +87,9 @@ TEST_METHOD(KLayoutLvsBuildsCdlPreparationCommands) {
   for (const auto& command : {probe, commands.Value()[1]}) {
     for (const auto* required :
          {L"--override-input yosys", L"--override-input openroad",
-          L"--override-input eqy-src", L"--offline", L"--max-jobs 0"}) {
+          L"--override-input eqy-src", L"path:$root/tools/yosys",
+          L"path:$root/tools/OpenROAD", L"path:$root/tools/eqy", L"--offline",
+          L"--max-jobs 0"}) {
       Assert::IsTrue(command.arguments[1].find(required) != std::wstring::npos);
     }
   }

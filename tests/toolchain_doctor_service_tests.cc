@@ -6,6 +6,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "designpp/application/toolchain_doctor_service.h"
@@ -87,6 +90,11 @@ runtime::ProcessResult SuccessfulDoctorResult(std::string output = {}) {
   return result;
 }
 
+runtime::ProcessResult SuccessfulPdkResult(std::string_view source = "ORFS") {
+  return SuccessfulDoctorResult("DESIGNPP_PDK_SOURCE=" + std::string(source) +
+                                "\n");
+}
+
 }  // namespace
 
 TEST_CLASS(ToolchainDoctorServiceTests){
@@ -108,7 +116,7 @@ provider.Complete(1, SuccessfulDoctorResult());
 Assert::IsTrue(provider.WaitForStarts(3));
 provider.Complete(2, SuccessfulDoctorResult());
 Assert::IsTrue(provider.WaitForStarts(4));
-provider.Complete(3, SuccessfulDoctorResult(), 2);
+provider.Complete(3, SuccessfulPdkResult(), 2);
 Assert::IsTrue(collector.WaitForTerminal());
 Assert::IsTrue(collector.Terminal().status.Ok());
 Assert::AreEqual<std::size_t>(1U, collector.TerminalCount());
@@ -129,12 +137,176 @@ TEST_METHOD(WslOneKernelFailsDiagnosisButOtherChecksStillRun) {
   provider.Complete(0, SuccessfulDoctorResult("4.4.0-microsoft\n"));
   for (std::size_t index = 1; index < 4; ++index) {
     Assert::IsTrue(provider.WaitForStarts(index + 1));
-    provider.Complete(index, SuccessfulDoctorResult());
+    provider.Complete(
+        index, index == 3 ? SuccessfulPdkResult() : SuccessfulDoctorResult());
   }
   Assert::IsTrue(collector.WaitForTerminal());
   Assert::IsFalse(collector.Terminal().status.Ok());
   Assert::IsFalse(collector.Check(application::DoctorCheckId::kWsl2).passed);
   Assert::AreEqual<std::size_t>(1U, collector.TerminalCount());
+}
+
+TEST_METHOD(InstalledFrameworksAtDifferentPathsExplainDoctorFailure) {
+  ControlledExecutionProvider provider;
+  application::ToolchainDoctorService service(&provider);
+  DoctorEventCollector collector;
+  core::ToolchainProfile profile = DoctorProfile();
+  profile.openlane_root = "~/.designpp/toolchains/openlane2";
+  profile.orfs_root = "~/.designpp/toolchains/orfs";
+  Assert::IsTrue(service
+                     .Start(std::move(profile), 14,
+                            [&collector](application::DoctorEvent event) {
+                              collector.Add(std::move(event));
+                            })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, SuccessfulDoctorResult("5.15-WSL2\n"));
+  runtime::ProcessResult missing_root = SuccessfulDoctorResult();
+  missing_root.exit_code = 1;
+  Assert::IsTrue(provider.WaitForStarts(2));
+  provider.Complete(1, missing_root);
+  Assert::IsTrue(provider.WaitForStarts(3));
+  provider.Complete(2, missing_root);
+  Assert::IsTrue(provider.WaitForStarts(4));
+  provider.Complete(3, SuccessfulPdkResult());
+  Assert::IsTrue(collector.WaitForTerminal());
+  const auto openlane = collector.Check(application::DoctorCheckId::kOpenLane);
+  const auto orfs = collector.Check(application::DoctorCheckId::kOrfs);
+  Assert::IsFalse(openlane.passed);
+  Assert::IsFalse(orfs.passed);
+  Assert::IsTrue(openlane.message.find("~/.designpp/toolchains/openlane2") !=
+                 std::string::npos);
+  Assert::IsTrue(orfs.message.find("~/.designpp/toolchains/orfs") !=
+                 std::string::npos);
+  Assert::IsTrue(orfs.message.find("activate") != std::string::npos);
+}
+
+TEST_METHOD(UnconfiguredRootsDoNotProbeTheHomeDirectory) {
+  ControlledExecutionProvider provider;
+  application::ToolchainDoctorService service(&provider);
+  DoctorEventCollector collector;
+  core::ToolchainProfile profile = DoctorProfile();
+  profile.openlane_root.clear();
+  profile.orfs_root.clear();
+  profile.pdk_root.clear();
+  Assert::IsTrue(service
+                     .Start(std::move(profile), 15,
+                            [&collector](application::DoctorEvent event) {
+                              collector.Add(std::move(event));
+                            })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, SuccessfulDoctorResult("5.15-WSL2\n"));
+  Assert::IsTrue(collector.WaitForTerminal());
+  Assert::IsFalse(
+      collector.Check(application::DoctorCheckId::kOpenLane).passed);
+  Assert::IsFalse(collector.Check(application::DoctorCheckId::kOrfs).passed);
+  Assert::IsFalse(collector.Check(application::DoctorCheckId::kPdk).passed);
+  Assert::IsTrue(collector.Check(application::DoctorCheckId::kOpenLane)
+                     .message.find("not configured") != std::string::npos);
+}
+
+TEST_METHOD(OrfsPlatformsSatisfyPdkCheckWithoutOpenLanePdkRoot) {
+  ControlledExecutionProvider provider;
+  application::ToolchainDoctorService service(&provider);
+  DoctorEventCollector collector;
+  core::ToolchainProfile profile = DoctorProfile();
+  profile.pdk_root.clear();
+  const std::string orfs_root = profile.orfs_root;
+  Assert::IsTrue(service
+                     .Start(std::move(profile), 16,
+                            [&collector](application::DoctorEvent event) {
+                              collector.Add(std::move(event));
+                            })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, SuccessfulDoctorResult("5.15-WSL2\n"));
+  for (std::size_t index = 1; index < 3; ++index) {
+    Assert::IsTrue(provider.WaitForStarts(index + 1));
+    provider.Complete(index, SuccessfulDoctorResult());
+  }
+  Assert::IsTrue(provider.WaitForStarts(4));
+  const runtime::WslCommand pdk_command = provider.Command(3);
+  Assert::AreEqual(std::wstring(L"/bin/bash"), pdk_command.program);
+  Assert::AreEqual(std::wstring(), pdk_command.arguments[3]);
+  Assert::AreEqual(std::wstring(orfs_root.begin(), orfs_root.end()),
+                   pdk_command.arguments[4]);
+  provider.Complete(3, SuccessfulPdkResult());
+  Assert::IsTrue(collector.WaitForTerminal());
+  Assert::IsTrue(collector.Check(application::DoctorCheckId::kPdk).passed);
+  Assert::IsTrue(collector.Check(application::DoctorCheckId::kPdk)
+                     .message.find("ORFS platforms") != std::string::npos);
+}
+
+TEST_METHOD(PdkCheckRequiresEvidenceEvenWhenProcessExitsZero) {
+  ControlledExecutionProvider provider;
+  application::ToolchainDoctorService service(&provider);
+  DoctorEventCollector collector;
+  Assert::IsTrue(service
+                     .Start(DoctorProfile(), 17,
+                            [&collector](application::DoctorEvent event) {
+                              collector.Add(std::move(event));
+                            })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, SuccessfulDoctorResult("5.15-WSL2\n"));
+  for (std::size_t index = 1; index < 4; ++index) {
+    Assert::IsTrue(provider.WaitForStarts(index + 1));
+    provider.Complete(index, SuccessfulDoctorResult());
+  }
+  Assert::IsTrue(collector.WaitForTerminal());
+  Assert::IsFalse(collector.Check(application::DoctorCheckId::kPdk).passed);
+}
+
+TEST_METHOD(WslUnexpectedOutputCannotPassWithZeroExitCode) {
+  ControlledExecutionProvider provider;
+  application::ToolchainDoctorService service(&provider);
+  DoctorEventCollector collector;
+  Assert::IsTrue(service
+                     .Start(DoctorProfile(), 12,
+                            [&collector](application::DoctorEvent event) {
+                              collector.Add(std::move(event));
+                            })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  provider.Complete(0, SuccessfulDoctorResult("Wsl/Service/E_UNEXPECTED WSL2"));
+  for (std::size_t index = 1; index < 4; ++index) {
+    Assert::IsTrue(provider.WaitForStarts(index + 1));
+    provider.Complete(
+        index, index == 3 ? SuccessfulPdkResult() : SuccessfulDoctorResult());
+  }
+  Assert::IsTrue(collector.WaitForTerminal());
+  Assert::IsFalse(collector.Terminal().status.Ok());
+  const auto check = collector.Check(application::DoctorCheckId::kWsl2);
+  Assert::IsFalse(check.passed);
+  Assert::IsTrue(check.message.find("update WSL") != std::string::npos);
+}
+
+TEST_METHOD(WslUtf16UnexpectedOutputCannotPassWithZeroExitCode) {
+  ControlledExecutionProvider provider;
+  application::ToolchainDoctorService service(&provider);
+  DoctorEventCollector collector;
+  Assert::IsTrue(service
+                     .Start(DoctorProfile(), 13,
+                            [&collector](application::DoctorEvent event) {
+                              collector.Add(std::move(event));
+                            })
+                     .Ok());
+  Assert::IsTrue(provider.WaitForStarts(1));
+  const std::string error = "Wsl/Service/E_UNEXPECTED WSL2";
+  std::string utf16;
+  for (char character : error) {
+    utf16.push_back(character);
+    utf16.push_back('\0');
+  }
+  provider.Complete(0, SuccessfulDoctorResult(std::move(utf16)));
+  for (std::size_t index = 1; index < 4; ++index) {
+    Assert::IsTrue(provider.WaitForStarts(index + 1));
+    provider.Complete(
+        index, index == 3 ? SuccessfulPdkResult() : SuccessfulDoctorResult());
+  }
+  Assert::IsTrue(collector.WaitForTerminal());
+  Assert::IsFalse(collector.Check(application::DoctorCheckId::kWsl2).passed);
 }
 
 TEST_METHOD(LateCompletionFromPreviousCheckIsIgnored) {
@@ -158,7 +330,7 @@ TEST_METHOD(LateCompletionFromPreviousCheckIsIgnored) {
   Assert::IsTrue(provider.WaitForStarts(3));
   provider.Complete(2, SuccessfulDoctorResult());
   Assert::IsTrue(provider.WaitForStarts(4));
-  provider.Complete(3, SuccessfulDoctorResult());
+  provider.Complete(3, SuccessfulPdkResult());
 
   Assert::IsTrue(collector.WaitForTerminal());
   Assert::IsTrue(collector.Terminal().status.Ok());

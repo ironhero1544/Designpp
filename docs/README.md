@@ -10,7 +10,8 @@
 |---|---|
 | [단계별 사용 설명서](guide/README.md) | 환경 준비부터 검증·결과 복구까지 |
 | [INSTALL](INSTALL.md) | 설치, 초기 환경 준비, 업데이트와 복구 |
-| [1.0.0 릴리스 노트](RELEASE_NOTES_1.0.0.md) | 배포 범위와 알려진 제한 |
+| [제3자 라이선스 점검](THIRD_PARTY_LICENSE_AUDIT.md) | Windows 배포물과 별도 설치 도구의 라이선스 구분 |
+| [MIT 라이선스](../LICENSE) | Design++ 자체 라이선스 원문 |
 | [Library Manager](LIBRARY_MANAGER.md) | Library 및 Tool Check 사용 |
 | [Workspace](WORKSPACE.md) | Cell 작업 창과 편집 |
 | [Architecture](ARCHITECTURE.md) | 계층, 실행 및 수명 관리 |

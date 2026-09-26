@@ -14,11 +14,14 @@
 #include <map>
 #include <optional>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include "designpp/core/toolchain_compatibility.h"
 
 namespace designpp::application {
 namespace {
@@ -29,6 +32,21 @@ using core::Status;
 constexpr std::uintmax_t kMaximumSettingsBytes = 1024 * 1024;
 constexpr wchar_t kWriterMutexName[] =
     L"Local\\DesignPlusPlus.ToolchainProfileStore.v1";
+constexpr char kLegacyOpenLaneDefaultRoot[] =
+    "~/.designpp/toolchains/openlane2";
+constexpr char kLegacyOrfsDefaultRoot[] = "~/.designpp/toolchains/orfs";
+constexpr char kDefaultOpenLanePdkRoot[] = "~/.volare";
+
+std::string DefaultManagedRoot(std::string_view provider_id) {
+  for (const core::ToolchainCompatibilityEntry& entry :
+       core::ToolchainCompatibilityCatalog::Entries()) {
+    if (entry.provider_id == provider_id) {
+      return "~/.designpp/toolchains/environments/" +
+             std::string(entry.bundle_id);
+    }
+  }
+  return {};
+}
 
 class JsonValue final {
  public:
@@ -567,7 +585,30 @@ core::Result<core::ToolchainSettings> ToolchainProfileStore::Load() const {
   if (!initialization_status_.Ok()) return initialization_status_;
   auto contents = ReadFile(settings_path_);
   if (!contents.Ok()) return contents.GetStatus();
-  return Decode(contents.Value());
+  auto decoded = Decode(contents.Value());
+  if (!decoded.Ok()) return decoded.GetStatus();
+  core::ToolchainSettings settings = std::move(decoded).Value();
+  const std::string openlane_default = DefaultManagedRoot("openlane2");
+  const std::string orfs_default = DefaultManagedRoot("orfs");
+  for (core::ToolchainProfile& profile : settings.profiles) {
+    if (profile.id != "default") continue;
+    // Correct only the generated legacy paths in memory. Other paths and
+    // activated environments are preserved; the saved file is not rewritten.
+    if (!openlane_default.empty() && profile.openlane_mode == "custom" &&
+        profile.active_openlane_environment_id.empty() &&
+        profile.openlane_root == kLegacyOpenLaneDefaultRoot) {
+      profile.openlane_root = openlane_default;
+    }
+    if (!orfs_default.empty() && profile.orfs_mode == "custom" &&
+        profile.active_orfs_environment_id.empty() &&
+        profile.orfs_root == kLegacyOrfsDefaultRoot) {
+      profile.orfs_root = orfs_default;
+    }
+    if (profile.pdk_root.empty()) {
+      profile.pdk_root = kDefaultOpenLanePdkRoot;
+    }
+  }
+  return settings;
 }
 
 core::Result<core::ToolchainSettings>
@@ -649,8 +690,9 @@ core::ToolchainSettings ToolchainProfileStore::CreateDefaults() {
   core::ToolchainProfile profile;
   profile.id = "default";
   profile.name = "Default WSL Toolchain";
-  profile.openlane_root = "~/.designpp/toolchains/openlane2";
-  profile.orfs_root = "~/.designpp/toolchains/orfs";
+  profile.openlane_root = DefaultManagedRoot("openlane2");
+  profile.orfs_root = DefaultManagedRoot("orfs");
+  profile.pdk_root = kDefaultOpenLanePdkRoot;
   profile.cpu_budget = logical_cpus > 1 ? logical_cpus - 1 : 1;
   core::ToolchainSettings settings;
   settings.selected_profile_id = profile.id;

@@ -16,6 +16,7 @@ constexpr int kInstallToolButtonId = 3002;
 constexpr int kRemoveToolButtonId = 3003;
 constexpr int kActivateToolButtonId = 3004;
 constexpr int kRollbackToolButtonId = 3005;
+constexpr int kCleanBuildCacheButtonId = 3006;
 
 std::wstring SelectedBundle(const runtime::ToolDefinition& tool) {
   if (tool.display_name.find(L"OpenLane") != std::wstring::npos) {
@@ -42,12 +43,13 @@ bool ToolCheckWindow::CreateOrShow(
     const std::vector<runtime::ToolDefinition>& tools,
     StartCheckCallback start_check, ToolActionCallback install_tool,
     ToolActionCallback remove_tool, ToolActionCallback activate_tool,
-    ToolActionCallback rollback_tool) {
+    ToolActionCallback rollback_tool, StartCheckCallback clean_build_cache) {
   start_check_ = std::move(start_check);
   install_tool_ = std::move(install_tool);
   remove_tool_ = std::move(remove_tool);
   activate_tool_ = std::move(activate_tool);
   rollback_tool_ = std::move(rollback_tool);
+  clean_build_cache_ = std::move(clean_build_cache);
   if (window_ != nullptr) {
     ShowWindow(window_, SW_RESTORE);
     SetForegroundWindow(window_);
@@ -114,6 +116,7 @@ void ToolCheckWindow::SetChecking(bool checking) const {
   EnableWindow(remove_button_, !checking);
   EnableWindow(activate_button_, !checking);
   EnableWindow(rollback_button_, !checking);
+  EnableWindow(clean_build_cache_button_, !checking);
 }
 
 LRESULT CALLBACK ToolCheckWindow::WindowProcedure(HWND window, UINT message,
@@ -154,7 +157,7 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
 
     case WM_GETMINMAXINFO: {
       auto* information = reinterpret_cast<MINMAXINFO*>(lparam);
-      information->ptMinTrackSize.x = ScaleForDpi(720, dpi_);
+      information->ptMinTrackSize.x = ScaleForDpi(880, dpi_);
       information->ptMinTrackSize.y = ScaleForDpi(420, dpi_);
       return 0;
     }
@@ -178,6 +181,10 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
       }
       if (LOWORD(wparam) == kRollbackToolButtonId && rollback_tool_) {
         rollback_tool_(SelectedToolIndex());
+        return 0;
+      }
+      if (LOWORD(wparam) == kCleanBuildCacheButtonId && clean_build_cache_) {
+        clean_build_cache_();
         return 0;
       }
       break;
@@ -211,6 +218,7 @@ LRESULT ToolCheckWindow::HandleMessage(UINT message, WPARAM wparam,
       remove_button_ = nullptr;
       activate_button_ = nullptr;
       rollback_button_ = nullptr;
+      clean_build_cache_button_ = nullptr;
       tool_list_ = nullptr;
       return 0;
 
@@ -252,6 +260,11 @@ bool ToolCheckWindow::CreateControls() {
       0, 0, 0, window_,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRollbackToolButtonId)),
       instance_, nullptr);
+  clean_build_cache_button_ = CreateWindowExW(
+      0, L"BUTTON", L"빌드 캐시 정리", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0,
+      0, 0, 0, window_,
+      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCleanBuildCacheButtonId)),
+      instance_, nullptr);
   tool_list_ = CreateWindowExW(
       WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"Tools",
       WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0,
@@ -259,7 +272,7 @@ bool ToolCheckWindow::CreateControls() {
   if (description_ == nullptr || start_button_ == nullptr ||
       install_button_ == nullptr || remove_button_ == nullptr ||
       activate_button_ == nullptr || rollback_button_ == nullptr ||
-      tool_list_ == nullptr) {
+      clean_build_cache_button_ == nullptr || tool_list_ == nullptr) {
     return false;
   }
 
@@ -313,29 +326,34 @@ void ToolCheckWindow::LayoutControls(int width, int height) const {
   const int remove_width = ScaleForDpi(110, dpi_);
   const int activate_width = ScaleForDpi(135, dpi_);
   const int rollback_width = ScaleForDpi(125, dpi_);
+  const int cache_width = ScaleForDpi(125, dpi_);
   const int button_height = ScaleForDpi(30, dpi_);
   const int buttons_width = check_width + install_width + activate_width +
-                            rollback_width + remove_width + gap * 4;
+                            rollback_width + remove_width + cache_width +
+                            gap * 5;
 
-  MoveWindow(description_, margin, margin,
-             std::max(0, width - margin * 2 - buttons_width - gap),
+  MoveWindow(description_, margin, margin, std::max(0, width - margin * 2),
              description_height, TRUE);
+  const int button_y = margin + description_height + gap;
   int button_x = std::max(margin, width - margin - buttons_width);
-  MoveWindow(start_button_, button_x, margin, check_width, button_height, TRUE);
+  MoveWindow(start_button_, button_x, button_y, check_width, button_height,
+             TRUE);
   button_x += check_width + gap;
-  MoveWindow(install_button_, button_x, margin, install_width, button_height,
+  MoveWindow(install_button_, button_x, button_y, install_width, button_height,
              TRUE);
   button_x += install_width + gap;
-  MoveWindow(activate_button_, button_x, margin, activate_width, button_height,
-             TRUE);
+  MoveWindow(activate_button_, button_x, button_y, activate_width,
+             button_height, TRUE);
   button_x += activate_width + gap;
-  MoveWindow(rollback_button_, button_x, margin, rollback_width, button_height,
-             TRUE);
+  MoveWindow(rollback_button_, button_x, button_y, rollback_width,
+             button_height, TRUE);
   button_x += rollback_width + gap;
-  MoveWindow(remove_button_, button_x, margin, remove_width, button_height,
+  MoveWindow(remove_button_, button_x, button_y, remove_width, button_height,
              TRUE);
-  const int list_top =
-      margin + std::max(button_height, description_height) + gap;
+  button_x += remove_width + gap;
+  MoveWindow(clean_build_cache_button_, button_x, button_y, cache_width,
+             button_height, TRUE);
+  const int list_top = button_y + button_height + gap;
   MoveWindow(tool_list_, margin, list_top, std::max(0, width - margin * 2),
              std::max(0, height - list_top - margin), TRUE);
 }

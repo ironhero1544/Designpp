@@ -33,7 +33,7 @@ class ToolCheckWindow final {
       const std::vector<runtime::ToolDefinition>& tools,
       StartCheckCallback start_check, ToolActionCallback install_tool,
       ToolActionCallback remove_tool, ToolActionCallback activate_tool,
-      ToolActionCallback rollback_tool);
+      ToolActionCallback rollback_tool, StartCheckCallback clean_build_cache);
 
   // Updates one tool row.
   void SetToolState(std::size_t index, std::wstring_view status,
@@ -63,6 +63,7 @@ class ToolCheckWindow final {
   HWND remove_button_ = nullptr;
   HWND activate_button_ = nullptr;
   HWND rollback_button_ = nullptr;
+  HWND clean_build_cache_button_ = nullptr;
   HWND tool_list_ = nullptr;
   UINT dpi_ = kDefaultDpi;
   UniqueFont font_;
@@ -72,6 +73,7 @@ class ToolCheckWindow final {
   ToolActionCallback remove_tool_;
   ToolActionCallback activate_tool_;
   ToolActionCallback rollback_tool_;
+  StartCheckCallback clean_build_cache_;
 };
 
 }  // namespace designpp::gui

@@ -20,6 +20,7 @@
 #include "designpp/adapters/openlane2_adapter.h"
 #include "designpp/adapters/opensta_adapter.h"
 #include "designpp/adapters/orfs_adapter.h"
+#include "designpp/adapters/orfs_flake_inputs.h"
 #include "designpp/adapters/simulation_result_parser.h"
 #include "designpp/adapters/verilator_simulation_adapter.h"
 #include "designpp/adapters/yosys_adapter.h"
@@ -1032,16 +1033,18 @@ TEST_METHOD(OrfsCommandUnitsKeepTwentyNanosecondClockAcrossLibertyUnits) {
         L"-lc",
         L"root=\"$1\"; script=\"$2\"; "
         L"original_home=\"$HOME\"; case \"$root\" in '~/'*) "
-        L"root=\"$original_home/${root#\\~/}\";; esac; exec nix "
-        L"--extra-experimental-features 'nix-command flakes' develop "
-        L"\"$root\" --offline --no-write-lock-file --override-input yosys "
-        L"\"git+file://$root/tools/yosys?submodules=1\" --override-input "
-        L"openroad \"git+file://$root/tools/OpenROAD?submodules=1\" "
-        L"--override-input eqy-src \"git+file://$root/tools/eqy\" "
-        L"--max-jobs 0 --builders '' --option fallback false --command "
-        L"/usr/bin/env DESIGNPP_ORIGINAL_HOME=\"$original_home\" "
-        L"openroad -exit "
-        L"\"$script\"",
+        L"root=\"$original_home/${root#\\~/}\";; esac; " +
+            std::wstring(adapters::kOrfsFlakeInputSelectionScript) +
+            L"exec nix "
+            L"--extra-experimental-features 'nix-command flakes' develop "
+            L"\"$root\" --offline --no-write-lock-file --override-input yosys "
+            L"\"$yosys_input\" --override-input "
+            L"openroad \"$openroad_input\" "
+            L"--override-input eqy-src \"$eqy_input\" "
+            L"--max-jobs 0 --builders '' --option fallback false --command "
+            L"/usr/bin/env DESIGNPP_ORIGINAL_HOME=\"$original_home\" "
+            L"openroad -exit "
+            L"\"$script\"",
         L"designpp-orfs-clock-units", L"~/.designpp/toolchains/orfs",
         writer_entry_wsl.Value()};
     const runtime::ProcessResult write_result =
@@ -1221,20 +1224,21 @@ TEST_METHOD(OrfsReadyPlatformsReachFloorplanAndLoadCheckpointHeadless) {
     load.arguments = {
         L"-lc",
         L"root=\"$1\"; case \"$root\" in '~/'*) "
-        L"root=\"$HOME/${root#\\~/}\";; esac; "
-        L"if [ -f \"$root/flake.nix\" ]; then "
-        L"exec nix --extra-experimental-features 'nix-command flakes' "
-        L"develop \"$root\" --no-write-lock-file --override-input yosys "
-        L"\"git+file://$root/tools/yosys?submodules=1\" "
-        L"--override-input openroad "
-        L"\"git+file://$root/tools/OpenROAD?submodules=1\" "
-        L"--command openroad -exit \"$2\"; fi; "
-        L"exe=\"${OPENROAD_EXE:-}\"; "
-        L"if [ -z \"$exe\" ]; then "
-        L"exe=\"$(command -v openroad 2>/dev/null || true)\"; fi; "
-        L"if [ -z \"$exe\" ]; then "
-        L"exe=\"$root/tools/install/OpenROAD/bin/openroad\"; fi; "
-        L"exec \"$exe\" -exit \"$2\"",
+        L"root=\"$HOME/${root#\\~/}\";; esac; " +
+            std::wstring(adapters::kOrfsFlakeInputSelectionScript) +
+            L"if [ -f \"$root/flake.nix\" ]; then "
+            L"exec nix --extra-experimental-features 'nix-command flakes' "
+            L"develop \"$root\" --no-write-lock-file --override-input yosys "
+            L"\"$yosys_input\" "
+            L"--override-input openroad "
+            L"\"$openroad_input\" "
+            L"--command openroad -exit \"$2\"; fi; "
+            L"exe=\"${OPENROAD_EXE:-}\"; "
+            L"if [ -z \"$exe\" ]; then "
+            L"exe=\"$(command -v openroad 2>/dev/null || true)\"; fi; "
+            L"if [ -z \"$exe\" ]; then "
+            L"exe=\"$root/tools/install/OpenROAD/bin/openroad\"; fi; "
+            L"exec \"$exe\" -exit \"$2\"",
         L"designpp-orfs-headless", L"~/.designpp/toolchains/orfs",
         script.Value()};
     const runtime::ProcessResult loaded = Run(load, std::chrono::minutes(2));

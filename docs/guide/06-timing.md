@@ -18,6 +18,7 @@
 5. **Run Timing**을 누릅니다.
 6. 요약, 위반 경로와 **Runs**를 확인하고 **Reports / Artifacts / Script**로
    원본 결과와 실행 입력을 확인합니다.
+   ![Timer Timing 창에서 Corner·SDC·Liberty와 OpenSTA 요약을 확인하는 화면](../images/timing-live.jpg)
 
 ## 결과 읽기
 

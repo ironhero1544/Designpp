@@ -23,6 +23,12 @@ OpenLane Layout에서 독립 실행 버튼이 비활성이라고 해서 flow의 
 
 1. 대상 Cell의 Layout을 열고 **Runs**에서 검증할 결과를 확인합니다.
 2. **Verification** 탭의 **Verification source Layout Run**이 의도한 Run인지 확인합니다.
+
+   ![Timer Layout의 Verification 탭에서 source Run과 이전 DRC/LVS 기록을 확인하는 화면](../images/verification-live.jpg)
+
+   화면의 `Stale` 표시는 이전 검증 기록이 현재 source Run과 연결되지 않는다는 뜻입니다.
+   이전 기록을 현재 Run의 통과 결과로 해석하지 않습니다.
+
 3. 지원 recipe와 실행 가능 상태를 확인합니다.
 4. **Run DRC**, **Run LVS**, 또는 **Run All Checks** 중 활성화된 동작을 실행합니다.
 5. 중단하려면 **Cancel Verification**을 누릅니다.

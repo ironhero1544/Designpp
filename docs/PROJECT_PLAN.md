@@ -1,7 +1,7 @@
 # Design++ 제작 계획
 
-> 1.0.0 배포 기준: [릴리스 노트](RELEASE_NOTES_1.0.0.md),
-> [설치 안내](INSTALL.md). 과거 단계의 검증 기록은 현재 완료 상태와 구분한다.
+> 1.0.0 설치 기준: [설치 안내](INSTALL.md). 과거 단계의 검증 기록은
+> 현재 완료 상태와 구분한다.
 
 ## Cell-scoped PDK manager
 
@@ -167,10 +167,14 @@ post-CTS equivalence check도 비활성화하지 않고 통과했다.
 
 ORFS 26Q2 후보는 annotated tag ID가 아닌 실제 commit
 `036d106273e66855cd5214d49518fd0f0df7de61`로 고정한다. 설치는 해당
-OpenROAD/Yosys submodule commit도 검사하며, 기존 설치와 실패 후보를 보존한다.
+OpenROAD/Yosys submodule commit도 검사하며, 기존 설치는 보존한다. 실패
+후보는 설치 잠금 아래 정리하며 비정상 종료 잔여물은 다음 설치 또는 Tool
+Check의 빌드 캐시 정리로 회수한다. 공유 Nix 저장소는 건드리지 않는다.
 일반 ORFS probe/Run은 offline/cache-only로 실행하고 설치도 승인 없는 소스
-빌드를 차단한다. 실제 후보 준비에서 OpenROAD 바이너리 캐시 부재로 이 차단이
-동작했으며, 별도 승인된 소스 빌드로 Nix closure를 준비한 뒤 두 platform의
+빌드를 차단한다. 실제 후보 준비에서 바이너리 캐시 부재로 이 차단이
+동작했으며, Tool Check의 별도 확인을 거친 로컬 소스 빌드는 Nix 작업 1개와
+`max(1, WSL에서 사용 가능한 논리 CPU 수 - 1)`의 빌드 코어 예산을 사용한다.
+승인된 소스 빌드로 Nix closure를 준비한 뒤 두 platform의
 full-flow를 검증했다. 공통 inventory/preparation
 서비스, 승인 UI, 설치 manifest 및 rollback UI 통합도 별도 미완료 항목이다.
 
@@ -551,6 +555,8 @@ wizard는 제품 범위에 포함하지 않는다.
 - [완료] Library Manager/Tool Check Per-Monitor V2 high-DPI 대응
 - [완료] OpenLane 2, ORFS 설치 경로 설정
 - [완료] PDK root 설정과 유효성 검사
+- [완료] 기본 Profile의 OpenLane PDK 경로 자동 입력과 ORFS platform 기반
+  Doctor PDK 가용성 검사
 - [완료] Toolchain Profile CRUD와 저장
 - [완료] 독립 GUI Doctor 화면
 
@@ -847,9 +853,18 @@ Phase 9의 주 목표는 OpenLane 2·ORFS의 변동하는 버전과 명령 계�
   않는 checkpoint 재사용 거부
 - [철회] backtick 디버거 제거 (2026-09-22 사용자 요청). WSL 직접 실행 복원.
 - [구현] x64 배포 ZIP, manifest, SHA-256 생성 스크립트와 설치·복구 문서
+- [구현] x64 Release 앱의 MSVC C++ 런타임 정적 링크로 새 Windows의
+  Visual C++ Redistributable 설치 의존성 제거
+- [구현] Windows 10/11 NSIS 설치 시 WebView2 Runtime 부재 확인과 Microsoft
+  Evergreen 부트스트래퍼 설치, 실패 시 설치 중단
+- [구현] NSIS 구성 요소 화면에서 사용자별 App Paths 실행 경로와 시작 메뉴·
+  바탕화면 바로가기를 개별 선택, 소유 항목만 제거하고 사용자 PATH는 유지
 - [검증] 고정 revision의 OpenLane 2 tiny Classic flow와 ORFS 명령 단위·fixture를
   실제 WSL 환경에서 실행하고 계약 probe 및 결과 수집을 확인
-- [검증 필요] 개발 도구가 없는 Windows 환경의 압축 해제·실행·재시작 검증
+- [검증 완료, 2026-09-26 사용자 확인] 별도 PC의 처음 사용자 환경에서
+  WSL·EDA 도구 준비와 앱 사용을 포함한 초기 설치 테스트 완료
+- [검증 필요] 개발 도구가 없는 Windows 11 환경의 압축 해제·실행·재시작 검증
+- [검증 필요] WebView2 Runtime이 없는 Windows 10에서 NSIS 설치·편집기 실행 검증
 
 로그 검색·QoR 비교와 일반적인 app/run crash recovery 확장은 후속 범위다.
 

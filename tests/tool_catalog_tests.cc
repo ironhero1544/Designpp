@@ -30,6 +30,94 @@ std::wstring JoinArguments(const std::vector<std::wstring>& arguments) {
 // clang-format off
 TEST_CLASS(ToolCatalogTests) {
  public:
+  TEST_METHOD(WslSetupInitializesAndSelectsUbuntuBeforeExplicitProbe) {
+    const std::vector<runtime::SetupStep> setup =
+        runtime::BuildWslSetupSteps();
+    Assert::AreEqual<std::size_t>(2U, setup.size());
+    const std::wstring configure = JoinArguments(setup[0].request.arguments);
+    Assert::IsTrue(configure.find(L"-NonInteractive") ==
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"FailSetup 'set-default-version'") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"Press Enter after recording the error") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"--no-launch") != std::wstring::npos);
+    Assert::IsTrue(configure.find(L"wsl.exe --update") != std::wstring::npos);
+    Assert::IsTrue(setup[1].required_output_marker ==
+                   "DESIGNPP_WSL2_READY");
+    Assert::IsTrue(configure.find(
+                       L"--distribution Ubuntu --user root --exec "
+                       L"/usr/bin/true") != std::wstring::npos);
+    Assert::IsTrue(configure.find(L"default=designpp") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"--set-version Ubuntu 2") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"--set-default Ubuntu") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"Restart Windows") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"ubuntu-bootstrap.pending") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"$managedBootstrap") !=
+                   std::wstring::npos);
+    const std::size_t default_version =
+        configure.find(L"--set-default-version 2");
+    const std::size_t install = configure.find(L"--install --distribution");
+    Assert::IsTrue(install < default_version);
+    Assert::IsTrue(configure.find(L"if ($managedBootstrap)") !=
+                   std::wstring::npos);
+    Assert::IsTrue(configure.find(L"did not stop cleanly") !=
+                   std::wstring::npos);
+    Assert::IsTrue(setup[0].restart_required_exit_code.has_value());
+    Assert::AreEqual<std::uint32_t>(
+        3010, *setup[0].restart_required_exit_code);
+
+    const std::wstring probe = JoinArguments(setup[1].request.arguments);
+    Assert::IsTrue(probe.find(L"--distribution Ubuntu") !=
+                   std::wstring::npos);
+    Assert::IsTrue(probe.find(L"/bin/sh") != std::wstring::npos);
+    Assert::IsTrue(probe.find(L"uname -r") != std::wstring::npos);
+  }
+
+  TEST_METHOD(ExistingWslSetupUsesOnlyChosenDistribution) {
+    const auto steps = runtime::BuildExistingWslSetupSteps(L"Existing Ubuntu");
+    Assert::AreEqual<std::size_t>(3U, steps.size());
+    Assert::IsTrue(JoinArguments(steps[0].request.arguments).find(L"--update") !=
+                   std::wstring::npos);
+    Assert::IsTrue(JoinArguments(steps[1].request.arguments)
+                       .find(L"--distribution Existing Ubuntu") !=
+                   std::wstring::npos);
+    Assert::IsTrue(steps[1].required_output_marker ==
+                   "DESIGNPP_WSL2_READY");
+    Assert::IsTrue(JoinArguments(steps[2].request.arguments)
+                       .find(L"--set-default Existing Ubuntu") !=
+                   std::wstring::npos);
+    for (const auto& step : steps) {
+      Assert::IsTrue(JoinArguments(step.request.arguments).find(L"--install") ==
+                     std::wstring::npos);
+      Assert::IsTrue(JoinArguments(step.request.arguments).find(L"--set-version") ==
+                     std::wstring::npos);
+    }
+  }
+
+  TEST_METHOD(DedicatedUbuntuSetupKeepsASeparateDistribution) {
+    const auto steps = runtime::BuildDedicatedUbuntuSetupSteps();
+    Assert::AreEqual<std::size_t>(3U, steps.size());
+    const std::wstring setup = JoinArguments(steps[0].request.arguments);
+    Assert::IsTrue(setup.find(L"--install --distribution Ubuntu --name "
+                              L"$target --no-launch") != std::wstring::npos);
+    Assert::IsTrue(setup.find(L"$target='DesignPlusPlus'") !=
+                   std::wstring::npos);
+    Assert::IsTrue(JoinArguments(steps[1].request.arguments)
+                       .find(L"--distribution DesignPlusPlus") !=
+                   std::wstring::npos);
+    Assert::IsTrue(steps[1].required_output_marker ==
+                   "DESIGNPP_WSL2_READY");
+    Assert::IsTrue(JoinArguments(steps[2].request.arguments)
+                       .find(L"--set-default DesignPlusPlus") !=
+                   std::wstring::npos);
+  }
+
   TEST_METHOD(ManagedInstallStatusDoesNotDependOnLoginLogoutHooks) {
     for (const auto tool : {runtime::ToolId::kOpenLane2,
                             runtime::ToolId::kOrfs}) {
@@ -47,6 +135,30 @@ TEST_CLASS(ToolCatalogTests) {
       }
       Assert::IsTrue(found);
     }
+  }
+
+  TEST_METHOD(OrfsInventoryAcceptsLegacyAndVersionedInputModes) {
+    for (const auto& tool : runtime::BuildToolCatalog()) {
+      if (tool.id != runtime::ToolId::kOrfs) continue;
+      const std::wstring command = JoinArguments(tool.probe_request.arguments);
+      Assert::IsTrue(command.find(L"schema_version=") !=
+                     std::wstring::npos);
+      Assert::IsTrue(command.find(L"input_mode=") != std::wstring::npos);
+      Assert::IsTrue(command.find(L":|1:|2:path") != std::wstring::npos);
+      return;
+    }
+    Assert::Fail(L"ORFS inventory is missing");
+  }
+
+  TEST_METHOD(CompleteSetupInstallsPythonHeadersForCocotbSourceBuilds) {
+    bool found = false;
+    for (const auto& step : runtime::BuildCompleteToolSetupSteps()) {
+      const std::wstring command = JoinArguments(step.request.arguments);
+      if (command.find(L"python3-venv") == std::wstring::npos) continue;
+      Assert::IsTrue(command.find(L"python3-dev") != std::wstring::npos);
+      found = true;
+    }
+    Assert::IsTrue(found);
   }
 
   TEST_METHOD(CalibreIsNotListedOrProbed) {
@@ -138,9 +250,16 @@ TEST_CLASS(ToolCatalogTests) {
     Assert::IsTrue(command.find(L"0e2d771c5ec38f232493c2afea738ea0200cb972") != std::wstring::npos);
     Assert::IsTrue(command.find(L"d3e297fcd479247322f83d14f42b3556db7acdfb") != std::wstring::npos);
     Assert::IsTrue(command.find(L"--max-jobs 0 --builders '' --option fallback false") != std::wstring::npos);
-    Assert::IsTrue(command.find(L"rm -rf") == std::wstring::npos);
+    Assert::IsTrue(command.find(L"rm -rf -- \"$candidate\"") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L".designpp-candidate") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"cleanup_candidates orfs orfs") !=
+                   std::wstring::npos);
     Assert::IsTrue(command.find(L"Source builds are disabled") != std::wstring::npos);
     Assert::IsTrue(command.find(L".orfs-candidate.XXXXXX") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"'schema_version=2' 'input_mode=path'") !=
                    std::wstring::npos);
     Assert::IsTrue(command.find(L".orfs-backup.XXXXXX") ==
                    std::wstring::npos);
@@ -160,6 +279,15 @@ TEST_CLASS(ToolCatalogTests) {
     Assert::IsTrue(command.find(L"FETCHCONTENT_FULLY_DISCONNECTED=ON") != std::wstring::npos);
     Assert::IsTrue(command.find(L"eff96db01293848b993651caa52d747f191be02e") != std::wstring::npos);
     Assert::IsTrue(command.find(L"override-input eqy-src") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"--override-input yosys "
+                                L"\"path:$candidate/tools/yosys\"") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"--override-input openroad "
+                                L"\"path:$candidate/tools/OpenROAD\"") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"--override-input eqy-src "
+                                L"\"path:$candidate/tools/eqy\"") !=
+                   std::wstring::npos);
     Assert::IsTrue(command.find(L"eqy --version") != std::wstring::npos);
     Assert::IsTrue(command.find(L"make -j$NIX_BUILD_CORES") != std::wstring::npos);
     Assert::IsTrue(command.find(L"ABCEXTERNAL=yosys-abc PREFIX=$out") !=
@@ -175,6 +303,66 @@ TEST_CLASS(ToolCatalogTests) {
     Assert::IsTrue(command.find(L"help repair_timing") != std::wstring::npos);
     Assert::IsTrue(command.find(L"grep -Fq -- -sequence") != std::wstring::npos);
     Assert::IsTrue(command.find(L"openlane2/shell.nix") ==
+                   std::wstring::npos);
+  }
+
+  TEST_METHOD(BuildCacheCleanupProtectsEnvironmentsAndSharedNixStore) {
+    const auto steps = runtime::BuildBuildCacheCleanupSteps();
+    Assert::AreEqual(static_cast<std::size_t>(1), steps.size());
+    const std::wstring command = JoinArguments(steps[0].request.arguments);
+    Assert::IsTrue(command.find(L".openlane-install.lock") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L".orfs-install.lock") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"flock -n 8") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"flock -n 9") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"[ ! -L \"$stale\" ]") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"[ ! -e \"$stale/.designpp-environment\" ]") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"owner=designpp") != std::wstring::npos);
+    Assert::IsTrue(command.find(L"provider=$candidate_provider") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"cleanup_candidates openlane openlane2") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"cleanup_candidates orfs orfs") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"rm -rf -- \"$stale\"") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"nix store gc") == std::wstring::npos);
+    Assert::IsTrue(command.find(L"/nix/store") == std::wstring::npos);
+  }
+
+  TEST_METHOD(OrfsSourceBuildRequiresExplicitPolicyAndLimitsCpuUse) {
+    const auto install = runtime::BuildToolInstallSteps(
+        runtime::ToolId::kOrfs,
+        runtime::OrfsBuildPolicy::kAllowLocalBuild);
+    Assert::AreEqual(std::size_t(3), install.size());
+    const std::wstring command = JoinArguments(install[1].request.arguments);
+    Assert::IsTrue(command.find(L"logical_cpus=$(nproc") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"build_cores=$((logical_cpus - 1))") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(
+                       L"--max-jobs 1 --cores \"$build_cores\" --builders ''") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"--cores 2") == std::wstring::npos);
+    Assert::IsTrue(command.find(L"--max-jobs 0") == std::wstring::npos);
+    Assert::IsTrue(command.find(L"Source builds are disabled") ==
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"Active environment unchanged") !=
+                   std::wstring::npos);
+
+    const auto full = runtime::BuildCompleteToolSetupSteps(
+        runtime::OrfsBuildPolicy::kAllowLocalBuild);
+    Assert::IsTrue(JoinArguments(full[5].request.arguments)
+                       .find(L"--max-jobs 1 --cores \"$build_cores\"") !=
+                   std::wstring::npos);
+    const auto openlane = runtime::BuildToolInstallSteps(
+        runtime::ToolId::kOpenLane2,
+        runtime::OrfsBuildPolicy::kAllowLocalBuild);
+    Assert::IsTrue(JoinArguments(openlane[1].request.arguments)
+                       .find(L"--max-jobs 1 --cores \"$build_cores\"") ==
                    std::wstring::npos);
   }
 
@@ -206,6 +394,10 @@ TEST_CLASS(ToolCatalogTests) {
                    std::wstring::npos);
     Assert::IsTrue(command.find(L"pull --ff-only") == std::wstring::npos);
     Assert::IsTrue(command.find(L".openlane-candidate.XXXXXX") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"cleanup_candidates openlane openlane2") !=
+                   std::wstring::npos);
+    Assert::IsTrue(command.find(L"rm -rf -- \"$candidate\"") !=
                    std::wstring::npos);
     Assert::IsTrue(command.find(
                        L"toolchains/environments/openlane2-2.3.10") !=

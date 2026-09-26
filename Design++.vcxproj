@@ -150,6 +150,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -382,6 +383,9 @@
           SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)\LICENSE.txt"
           DestinationFiles="$(OutDir)WebView2-LICENSE.txt"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(PkgMicrosoft_Web_WebView2)\NOTICE.txt"
+          DestinationFiles="$(OutDir)WebView2-NOTICE.txt"
           SkipUnchangedFiles="true" />
   </Target>
   <ImportGroup Label="ExtensionTargets">

@@ -550,7 +550,9 @@ ProcessLaunchResult ProcessRunner::RunElevatedAsync(
   execute.lpParameters = arguments.empty() ? nullptr : arguments.c_str();
   execute.lpDirectory =
       working_directory.empty() ? nullptr : working_directory.c_str();
-  execute.nShow = SW_HIDE;
+  // Elevated setup cannot redirect output through ShellExecuteEx. Keep its
+  // console visible so the user can observe Windows/WSL installation progress.
+  execute.nShow = SW_SHOWNORMAL;
   if (!ShellExecuteExW(&execute) || execute.hProcess == nullptr) {
     return {ProcessSession(), FormatWindowsError(GetLastError())};
   }

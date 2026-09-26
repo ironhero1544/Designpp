@@ -1,5 +1,7 @@
 # Design++
 
+![Design++ — Windows-native semiconductor IDE](docs/images/main.png)
+
 > **Semiconductor IDE (Integrated Design Environment)**
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)](https://isocpp.org/)
@@ -40,12 +42,16 @@ the source and settings for a design, while Views expose RTL, testbench,
 constraints, synthesis, timing, and layout work. Independent workspaces support
 working with multiple Cells, and the central Output collects task-labelled logs.
 
+![Library Manager showing the Test Library, Timer Cell, and its Views](docs/images/library-manager.jpg)
+
 ### HDL Editing and Simulation
 
 The embedded **Monaco Editor** provides Verilog/SystemVerilog editing and diagnostic
 navigation. Source management includes top-module selection, include directories,
 defines, and parameters. Verilator lint, Icarus/Verilator simulation, cocotb
 execution, and GTKWave integration support design and testbench verification.
+
+![Verilog workspace with the Monaco HDL editor and source tree](docs/images/hdl-editor.jpg)
 
 ### Synthesis and Timing Analysis
 
@@ -61,6 +67,8 @@ flows. ORFS also supports stage selection and resuming compatible checkpoints.
 Layout workspaces present run history, metrics, generated artifacts, and
 verification results, with external viewer integration.
 
+![ORFS synthesis through final stage with available checkpoints](docs/images/physical-flow-stages.jpg)
+
 PDK selection is saved per Cell. Independent DRC/LVS availability depends on the
 backend and registered recipe: ORFS sky130hd has DRC/LVS recipes, while ASAP7 has
 DRC support only. OpenLane verification results are collected from its flow reports.
@@ -70,6 +78,12 @@ DRC support only. OpenLane verification results are collected from its flow repo
 **Tool Check** handles environment preparation, probing, activation, and rollback.
 **Toolchain Doctor** manages distribution and custom path settings. Compatibility
 checks validate framework revisions and required tool capabilities before execution.
+
+![Tool Check showing detected EDA tool versions](docs/images/tool-check.jpg)
+
+The image shows versions detected on a local example computer. This release
+supports OpenLane 2 2.3.10 and ORFS 26Q2 through the managed toolchains in
+Tool Check; execution also requires a matching revision and tool capabilities.
 
 Long-running work executes outside the UI thread with progress, cancellation,
 and CPU resource coordination. Atomic persistence and writer leases protect
@@ -116,15 +130,33 @@ results before proceeding; supported checks vary with the selected environment.
 
 ## Requirements and Getting Started
 
-- Windows 10/11 x64
-- Microsoft Visual C++ v14 x64 Redistributable and WebView2 Runtime
+Design++ runs on Windows 10/11 x64. Its WSL2 setup requires Windows 10 version
+2004 (build 19041) or later, or Windows 11. Storage figures refer to free space
+for the app, WSL2, EDA toolchains, and design data.
+
+| | CPU | Memory | Free storage |
+|---|---|---|---|
+| Minimum | Intel Core i5-3470 (Windows 10 reference CPU), or an equivalent x64 CPU with SLAT and hardware virtualization enabled | 4 GB or more | 50 GB or more |
+| Recommended | Intel Core i7 10th generation or newer | 32 GB or more | 50 GB or more |
+
+The 4 GB minimum follows Microsoft's Windows hypervisor host guidance; it is
+only a baseline for starting WSL2, not a promise that an EDA flow will fit in
+memory. See Microsoft's [WSL installation requirements](https://learn.microsoft.com/en-us/windows/wsl/install)
+and [virtualization hardware requirements](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/host-hardware-requirements?pivots=windows-server).
+Intel [lists VT-x and EPT for the i5-3470](https://www.intel.com/content/www/us/en/products/sku/68316/intel-core-i53470-processor-6m-cache-up-to-3-60-ghz/specifications.html),
+which establishes it as a concrete WSL2-capable CPU reference; this does not
+establish EDA-flow performance. Windows 11 additionally requires a CPU on
+[Microsoft's supported list](https://support.microsoft.com/en-us/windows/experience/compatibility/windows-11-system-requirements).
+
+- WebView2 Runtime for the embedded editor (the NSIS setup installs it when missing);
+  the Release app includes its C++ runtime
 - WSL2 with a Linux distribution for EDA execution
 - The toolchain, libraries, and PDK required by the selected design flow
 
 See the [installation guide](docs/INSTALL.md) for setup and recovery, and
 [Library Manager](docs/LIBRARY_MANAGER.md) / [Workspace](docs/WORKSPACE.md) for
-usage. Supported versions and verification limits are documented in the
-[release notes](docs/RELEASE_NOTES_1.0.0.md).
+usage. The managed toolchains are OpenLane 2 2.3.10 and ORFS 26Q2. PDK and
+independent DRC/LVS support depend on the selected backend and recipe.
 
 ## Build
 
@@ -162,3 +194,8 @@ docs/           User guides, formats, architecture, and development history
 - [Architecture](docs/ARCHITECTURE.md) · [Development plan](docs/PROJECT_PLAN.md)
 - [Project format](docs/PROJECT_FORMAT.md) · [Library format](docs/LIBRARY_FORMAT.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+## License
+
+Design++ is licensed under the [MIT License](LICENSE). Bundled third-party
+components retain their own licenses; see [Third-party notices](THIRD_PARTY_NOTICES.md).

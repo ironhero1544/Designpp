@@ -91,11 +91,47 @@ constexpr wchar_t kOrfsEqyRecipePatch[] =
            openroad.packages.${system}.default
 )patch";
 
-ProcessRequest MakePowerShellRequest(std::wstring script) {
+// The caller must hold the matching installation lock. Legacy candidates are
+// identified by exact Git origin; new candidates carry an ownership marker.
+constexpr wchar_t kCandidateCleanupScript[] =
+    LR"script(
+cleanup_candidates() {
+  local candidate_name="$1" candidate_provider="$2" expected_origin="$3"
+  local stale stale_origin failed=0
+  for stale in "$toolchains"/."$candidate_name"-candidate.*; do
+    [ -d "$stale" ] && [ ! -L "$stale" ] || continue
+    [ ! -e "$stale/.designpp-environment" ] || continue
+    if [ -f "$stale/.designpp-candidate" ]; then
+      grep -Fxq 'owner=designpp' "$stale/.designpp-candidate" || continue
+      grep -Fxq "provider=$candidate_provider" "$stale/.designpp-candidate" || continue
+    else
+      stale_origin=$(git -C "$stale" remote get-url origin 2>/dev/null || true)
+      [ "$stale_origin" = "$expected_origin" ] || continue
+    fi
+    if rm -rf -- "$stale"; then
+      printf 'Removed abandoned %s candidate: %s\n' "$candidate_provider" "$stale"
+    else
+      printf 'Could not remove abandoned %s candidate: %s\n' "$candidate_provider" "$stale" >&2
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+)script";
+
+ProcessRequest MakePowerShellRequest(std::wstring script,
+                                     bool allow_failure_prompt = false) {
   ProcessRequest request;
   request.executable = L"powershell.exe";
-  request.arguments = {L"-NoProfile", L"-NonInteractive", L"-Command",
-                       std::move(script)};
+  request.arguments = {L"-NoProfile"};
+  if (!allow_failure_prompt) {
+    request.arguments.push_back(L"-NonInteractive");
+  }
+  request.arguments.push_back(L"-Command");
+  request.arguments.push_back(
+      L"$Host.UI.RawUI.WindowTitle='Design++ 관리자 설정'; "
+      L"Write-Host 'Design++ 관리자 설정을 시작합니다.'; " +
+      std::move(script));
   return request;
 }
 
@@ -154,24 +190,173 @@ SetupStep WebView2InstallStep() {
 
 std::vector<SetupStep> BuildWslSetupSteps() {
   std::vector<SetupStep> steps;
-  steps.push_back({L"WSL2 및 Ubuntu 관리자 설정",
-                   MakePowerShellRequest(
-                       L"$distros = @(wsl.exe --list --quiet 2>$null); "
-                       L"if ($distros -notcontains 'Ubuntu') { "
-                       L"wsl.exe --install --distribution Ubuntu --no-launch; "
-                       L"if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }; "
-                       L"wsl.exe --set-default-version 2; exit $LASTEXITCODE"),
-                   OutputEncoding::kUtf16LittleEndian, false, true});
+  steps.push_back(
+      {L"WSL2 및 Ubuntu 관리자 설정",
+       MakePowerShellRequest(
+           L"function FailSetup($stage, $code) { "
+           L"Write-Host ('WSL2 setup failed at: ' + $stage + "
+           L"'; exit code: ' + $code) -ForegroundColor Red; "
+           L"Read-Host 'Press Enter after recording the error'; "
+           L"exit $code }; "
+           L"$distros = @(wsl.exe --list --quiet 2>$null); "
+           L"$stateDir = Join-Path $env:LOCALAPPDATA 'Design++'; "
+           L"$pending = Join-Path $stateDir 'ubuntu-bootstrap.pending'; "
+           L"$newUbuntu = $distros -notcontains 'Ubuntu'; "
+           L"if ($newUbuntu) { "
+           L"Write-Output 'Installing Ubuntu'; "
+           L"wsl.exe --install --distribution Ubuntu --no-launch; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'install Ubuntu' $LASTEXITCODE }; "
+           L"New-Item -ItemType Directory -Force -Path $stateDir | "
+           L"Out-Null; New-Item -ItemType File -Force -Path $pending | "
+           L"Out-Null }; "
+           L"Write-Output 'Updating WSL'; "
+           L"wsl.exe --update; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'update WSL' $LASTEXITCODE }; "
+           L"Write-Output 'Setting WSL default version to 2'; "
+           L"wsl.exe --set-default-version 2; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'set-default-version' $LASTEXITCODE }; "
+           L"$managedBootstrap = $newUbuntu -or (Test-Path $pending); "
+           L"Write-Output 'Starting Ubuntu initialization'; "
+           L"wsl.exe --distribution Ubuntu --user root --exec "
+           L"/usr/bin/true; if ($LASTEXITCODE -ne 0) { "
+           L"Write-Error 'Ubuntu is installed but cannot start. "
+           L"Restart Windows, then run WSL2 setup again.'; exit 3010 "
+           L"}; if ($managedBootstrap) { "
+           L"Write-Output 'Provisioning the Design++ Ubuntu user'; "
+           L"wsl.exe --distribution Ubuntu --user root --exec "
+           L"/bin/sh -c \"id -u designpp >/dev/null 2>&1 || "
+           L"useradd --create-home --shell /bin/bash designpp; "
+           L"printf '\\n[user]\\ndefault=designpp\\n' >> "
+           L"/etc/wsl.conf\"; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'create designpp user' $LASTEXITCODE }; "
+           L"wsl.exe --terminate Ubuntu; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"Write-Warning 'Ubuntu did not stop cleanly; its default user "
+           L"will apply after the next Windows restart.' } } else { "
+           L"Write-Output 'Converting the existing Ubuntu distribution to "
+           L"WSL2'; wsl.exe --set-version Ubuntu 2; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'convert Ubuntu to WSL2' $LASTEXITCODE } }; "
+           L"Write-Output 'Selecting Ubuntu as the default distribution'; "
+           L"wsl.exe --set-default Ubuntu; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'select Ubuntu' $LASTEXITCODE }; "
+           L"if ($managedBootstrap) { Remove-Item -Force $pending }; exit 0",
+           true),
+       OutputEncoding::kUtf16LittleEndian, false, true, 3010});
 
   WslCommand probe;
-  probe.program = L"/usr/bin/uname";
-  probe.arguments = {L"-a"};
-  steps.push_back({L"WSL2 Linux 실행 확인", WslExecutor::BuildRequest(probe),
-                   OutputEncoding::kUtf8, false});
+  probe.distribution = L"Ubuntu";
+  probe.program = L"/bin/sh";
+  probe.arguments = {
+      L"-c",
+      L"case \"$(uname -r)\" in *WSL2*|*wsl2*) "
+      L"printf '%s\\n' DESIGNPP_WSL2_READY ;; *) exit 78 ;; esac"};
+  SetupStep verification{L"WSL2 Linux 실행 확인",
+                         WslExecutor::BuildRequest(probe),
+                         OutputEncoding::kUtf8, false};
+  verification.required_output_marker = "DESIGNPP_WSL2_READY";
+  steps.push_back(std::move(verification));
   return steps;
 }
 
-std::vector<SetupStep> BuildCompleteToolSetupSteps() {
+std::vector<SetupStep> BuildExistingWslSetupSteps(std::wstring distribution) {
+  if (distribution.empty()) return {};
+  ProcessRequest update;
+  update.executable = L"wsl.exe";
+  update.arguments = {L"--update"};
+  WslCommand probe;
+  probe.distribution = distribution;
+  probe.program = L"/bin/sh";
+  probe.arguments = {
+      L"-c",
+      L"case \"$(uname -r)\" in *WSL2*|*wsl2*) "
+      L"printf '%s\\n' DESIGNPP_WSL2_READY ;; *) exit 78 ;; esac"};
+  SetupStep verification{L"선택한 WSL2 배포판 실행 확인",
+                         WslExecutor::BuildRequest(probe),
+                         OutputEncoding::kUtf8, false};
+  verification.required_output_marker = "DESIGNPP_WSL2_READY";
+  ProcessRequest select;
+  select.executable = L"wsl.exe";
+  select.arguments = {L"--set-default", std::move(distribution)};
+  return {{L"WSL 업데이트", std::move(update),
+           OutputEncoding::kUtf16LittleEndian, false, true},
+          std::move(verification),
+          {L"선택한 WSL 배포판을 기본값으로 설정", std::move(select),
+           OutputEncoding::kUtf16LittleEndian, false}};
+}
+
+std::vector<SetupStep> BuildDedicatedUbuntuSetupSteps() {
+  std::vector<SetupStep> steps;
+  steps.push_back(
+      {L"Design++ 전용 Ubuntu 관리자 설정",
+       MakePowerShellRequest(
+           L"function FailSetup($stage, $code) { "
+           L"Write-Host ('Design++ Ubuntu setup failed at: ' + $stage + "
+           L"'; exit code: ' + $code) -ForegroundColor Red; "
+           L"Read-Host 'Press Enter after recording the error'; "
+           L"exit $code }; "
+           L"$target='DesignPlusPlus'; "
+           L"$stateDir=Join-Path $env:LOCALAPPDATA 'Design++'; "
+           L"$pending=Join-Path $stateDir 'dedicated-ubuntu.pending'; "
+           L"$installed=@(wsl.exe --list --quiet 2>$null); "
+           L"if (($installed -contains $target) -and "
+           L"!(Test-Path $pending)) { "
+           L"FailSetup 'distribution already exists' 73 }; "
+           L"wsl.exe --update; if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'update WSL' $LASTEXITCODE }; "
+           L"wsl.exe --set-default-version 2; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'set-default-version' $LASTEXITCODE }; "
+           L"if ($installed -notcontains $target) { "
+           L"wsl.exe --install --distribution Ubuntu --name $target "
+           L"--no-launch; if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'install named Ubuntu' $LASTEXITCODE }; "
+           L"New-Item -ItemType Directory -Force -Path $stateDir | "
+           L"Out-Null; New-Item -ItemType File -Force -Path $pending | "
+           L"Out-Null }; "
+           L"wsl.exe --distribution $target --user root --exec "
+           L"/usr/bin/true; if ($LASTEXITCODE -ne 0) { exit 3010 }; "
+           L"wsl.exe --distribution $target --user root --exec "
+           L"/bin/sh -c \"id -u designpp >/dev/null 2>&1 || "
+           L"useradd --create-home --shell /bin/bash designpp; "
+           L"printf '\\n[user]\\ndefault=designpp\\n' >> "
+           L"/etc/wsl.conf\"; if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'create designpp user' $LASTEXITCODE }; "
+           L"wsl.exe --terminate $target; "
+           L"if ($LASTEXITCODE -ne 0) { "
+           L"FailSetup 'terminate Ubuntu' $LASTEXITCODE }; "
+           L"Remove-Item -Force $pending; exit 0",
+           true),
+       OutputEncoding::kUtf16LittleEndian, false, true, 3010});
+
+  WslCommand probe;
+  probe.distribution = L"DesignPlusPlus";
+  probe.program = L"/bin/sh";
+  probe.arguments = {
+      L"-c",
+      L"case \"$(uname -r)\" in *WSL2*|*wsl2*) "
+      L"printf '%s\\n' DESIGNPP_WSL2_READY ;; *) exit 78 ;; esac"};
+  SetupStep verification{L"Design++ 전용 Ubuntu 실행 확인",
+                         WslExecutor::BuildRequest(probe),
+                         OutputEncoding::kUtf8, false};
+  verification.required_output_marker = "DESIGNPP_WSL2_READY";
+  steps.push_back(std::move(verification));
+
+  ProcessRequest select;
+  select.executable = L"wsl.exe";
+  select.arguments = {L"--set-default", L"DesignPlusPlus"};
+  steps.push_back({L"Design++ 전용 Ubuntu를 기본값으로 설정", std::move(select),
+                   OutputEncoding::kUtf16LittleEndian, false});
+  return steps;
+}
+
+std::vector<SetupStep> BuildCompleteToolSetupSteps(
+    OrfsBuildPolicy orfs_build_policy) {
   const auto& openlane = *core::ToolchainCompatibilityCatalog::Find(
       "openlane2", "openlane2-2.3.10");
   const auto& orfs =
@@ -180,14 +365,15 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
   steps.push_back({L"APT 패키지 인덱스 업데이트",
                    MakeRootWslRequest(L"/usr/bin/apt-get", {L"update"}),
                    OutputEncoding::kUtf8, false});
-  steps.push_back({L"기본 EDA 패키지 설치",
-                   MakeRootWslRequest(
-                       L"/usr/bin/apt-get",
-                       {L"install", L"-y", L"verilator", L"iverilog", L"yosys",
-                        L"gtkwave", L"magic", L"netgen-lvs", L"klayout",
-                        L"python3", L"python3-pip", L"python3-venv", L"curl",
-                        L"git", L"ca-certificates", L"xz-utils", L"make"}),
-                   OutputEncoding::kUtf8, false});
+  steps.push_back(
+      {L"기본 EDA 패키지 설치",
+       MakeRootWslRequest(
+           L"/usr/bin/apt-get",
+           {L"install", L"-y", L"verilator", L"iverilog", L"yosys", L"gtkwave",
+            L"magic", L"netgen-lvs", L"klayout", L"python3", L"python3-pip",
+            L"python3-venv", L"python3-dev", L"curl", L"git",
+            L"ca-certificates", L"xz-utils", L"make"}),
+       OutputEncoding::kUtf8, false});
 
   WslCommand python_environment;
   python_environment.program = L"/bin/bash";
@@ -231,16 +417,28 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
           L"\"; mkdir -p \"$toolchains/environments\"; "
           L"exec 9>\"$toolchains/.openlane-install.lock\"; "
           L"flock -n 9 || { echo 'Another OpenLane install is running.' >&2; "
-          L"exit 73; }; test ! -e \"$active\" || { "
+          L"exit 73; }; " +
+          std::wstring(kCandidateCleanupScript) +
+          L"cleanup_candidates openlane openlane2 "
+          L"https://github.com/efabless/openlane2.git || "
+          L"echo 'Some abandoned OpenLane candidates could not be "
+          L"removed.' >&2; test ! -e \"$active\" || { "
           L"echo 'Environment already exists; recheck it instead of replacing "
           L"it.'; exit 0; }; "
           L"candidate=''; "
           L"cleanup() { status=$?; trap - EXIT; "
-          L"if test -n \"$candidate\" && test -e \"$candidate\"; then "
-          L"printf 'OpenLane candidate retained: %s\\n' \"$candidate\" >&2; "
-          L"fi; "
-          L"return $status; }; trap cleanup EXIT; "
+          L"if [ -n \"$candidate\" ] && [ -d \"$candidate\" ] && "
+          L"[ ! -L \"$candidate\" ]; then "
+          L"case \"$candidate\" in \"$toolchains\"/.openlane-candidate.*) "
+          L"if rm -rf -- \"$candidate\"; then "
+          L"printf 'Removed OpenLane candidate: %s\\n' \"$candidate\"; "
+          L"else printf 'Could not remove OpenLane candidate: %s\\n' "
+          L"\"$candidate\" >&2; fi;; esac; fi; return $status; }; "
+          L"trap cleanup EXIT; trap 'exit 143' TERM; "
+          L"trap 'exit 130' INT; trap 'exit 129' HUP; "
           L"candidate=$(mktemp -d \"$toolchains/.openlane-candidate.XXXXXX\"); "
+          L"printf '%s\\n' 'owner=designpp' 'provider=openlane2' "
+          L">\"$candidate/.designpp-candidate\"; "
           L"git -C \"$candidate\" init -q; "
           L"git -C \"$candidate\" remote add origin "
           L"https://github.com/efabless/openlane2.git; "
@@ -259,6 +457,7 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
           CatalogText(openlane.revision) +
           L"' "
           L">\"$candidate/.designpp-environment\"; "
+          L"rm -- \"$candidate/.designpp-candidate\"; "
           L"mv -- \"$candidate\" \"$active\"; candidate=''; "
           L"trap - EXIT; "
           L"echo 'OpenLane environment prepared; activation is a separate "
@@ -267,6 +466,29 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
                    WslExecutor::BuildRequest(openlane_install),
                    OutputEncoding::kUtf8, false});
 
+  const bool allow_local_build =
+      orfs_build_policy == OrfsBuildPolicy::kAllowLocalBuild;
+  const std::wstring build_budget_script =
+      allow_local_build
+          ? L"logical_cpus=$(nproc 2>/dev/null || printf '1'); "
+            L"case \"$logical_cpus\" in ''|*[!0-9]*) logical_cpus=1;; "
+            L"esac; build_cores=1; "
+            L"if [ \"$logical_cpus\" -gt 1 ]; then "
+            L"build_cores=$((logical_cpus - 1)); fi; "
+          : L"";
+  const std::wstring build_options =
+      allow_local_build
+          ? L"--max-jobs 1 --cores \"$build_cores\" --builders '' "
+            L"--option fallback false "
+          : L"--max-jobs 0 --builders '' --option fallback false ";
+  const std::wstring failure_guidance =
+      allow_local_build
+          ? L"ORFS preparation failed. Inspect the Nix build log. Active "
+            L"environment unchanged."
+          : L"ORFS preparation failed. Source builds are disabled; inspect "
+            L"the Nix log for missing cache entries or validation errors. "
+            L"A source build requires separate approval. Active environment "
+            L"unchanged.";
   WslCommand orfs_install;
   orfs_install.program = L"/bin/bash";
   orfs_install.arguments = {
@@ -281,16 +503,30 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
           L"echo 'ORFS install requires flock.' >&2; exit 69; }; "
           L"exec 9>\"$toolchains/.orfs-install.lock\"; "
           L"flock -n 9 || { echo 'Another ORFS install is running.' >&2; "
-          L"exit 73; }; test ! -e \"$active\" || { "
+          L"exit 73; }; " +
+          std::wstring(kCandidateCleanupScript) +
+          L"cleanup_candidates orfs orfs "
+          L"https://github.com/The-OpenROAD-Project/"
+          L"OpenROAD-flow-scripts || "
+          L"echo 'Some abandoned ORFS candidates could not be removed.' "
+          L">&2; "
+          L"test ! -e \"$active\" || { "
           L"echo 'Environment already exists; recheck it instead of replacing "
           L"it.'; exit 0; }; "
           L"candidate=''; "
           L"cleanup() { status=$?; trap - EXIT; "
-          L"if test -n \"$candidate\" && test -e \"$candidate\"; then "
-          L"printf 'ORFS candidate retained: %s\\n' \"$candidate\" >&2; fi; "
-          L"return $status; }; "
-          L"trap cleanup EXIT; "
+          L"if [ -n \"$candidate\" ] && [ -d \"$candidate\" ] && "
+          L"[ ! -L \"$candidate\" ]; then "
+          L"case \"$candidate\" in \"$toolchains\"/.orfs-candidate.*) "
+          L"if rm -rf -- \"$candidate\"; then "
+          L"printf 'Removed ORFS candidate: %s\\n' \"$candidate\"; "
+          L"else printf 'Could not remove ORFS candidate: %s\\n' "
+          L"\"$candidate\" >&2; fi;; esac; fi; return $status; }; "
+          L"trap cleanup EXIT; trap 'exit 143' TERM; "
+          L"trap 'exit 130' INT; trap 'exit 129' HUP; "
           L"candidate=$(mktemp -d \"$toolchains/.orfs-candidate.XXXXXX\"); "
+          L"printf '%s\\n' 'owner=designpp' 'provider=orfs' "
+          L">\"$candidate/.designpp-candidate\"; "
           L"git -C \"$candidate\" init -q; "
           L"git -C \"$candidate\" remote add origin "
           L"https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts; "
@@ -334,14 +570,16 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
           L"printf '%s' \"$2\" | git -C \"$candidate/tools/yosys\" "
           L"apply --unidiff-zero -; "
           L"printf '%s' \"$3\" | git -C \"$candidate\" "
-          L"apply --unidiff-zero -; "
+          L"apply --unidiff-zero -; " +
+          build_budget_script +
           L"nix --extra-experimental-features 'nix-command flakes' develop "
           L"\"$candidate\" --no-write-lock-file --override-input yosys "
-          L"\"git+file://$candidate/tools/yosys?submodules=1\" "
+          L"\"path:$candidate/tools/yosys\" "
           L"--override-input openroad "
-          L"\"git+file://$candidate/tools/OpenROAD?submodules=1\" "
-          L"--override-input eqy-src \"git+file://$candidate/tools/eqy\" "
-          L"--max-jobs 0 --builders '' --option fallback false "
+          L"\"path:$candidate/tools/OpenROAD\" "
+          L"--override-input eqy-src "
+          L"\"path:$candidate/tools/eqy\" " +
+          build_options +
           L"--command /bin/bash -c "
           L"'yosys -p \"help read_liberty\" 2>/dev/null | "
           L"grep -Fq -- -unit_delay && "
@@ -350,19 +588,19 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
           L"printf \"%s\\n\" \"help repair_timing\" \"exit\" | "
           L"openroad -no_init -exit /dev/stdin 2>&1 | grep -Fq -- -sequence && "
           L"openroad -version && eqy --version' || { "
-          L"echo 'ORFS preparation failed. Source builds are disabled; "
-          L"inspect the Nix log for missing cache entries or validation "
-          L"errors. "
-          L"A source build requires separate approval. Active environment "
-          L"unchanged.' "
+          L"echo '" +
+          failure_guidance +
+          L"' "
           L">&2; exit 78; }; "
-          L"printf '%s\\n' 'provider=orfs' 'version=" +
+          L"printf '%s\\n' 'schema_version=2' 'input_mode=path' "
+          L"'provider=orfs' 'version=" +
           CatalogText(orfs.version) +
           L"' "
           L"'commit=" +
           CatalogText(orfs.revision) +
           L"' "
           L">\"$candidate/.designpp-environment\"; "
+          L"rm -f -- \"$candidate/.designpp-candidate\"; "
           L"mv -- \"$candidate\" \"$active\"; candidate=''; "
           L"trap - EXIT; "
           L"echo 'ORFS environment prepared; activation is a separate action.'",
@@ -377,6 +615,37 @@ std::vector<SetupStep> BuildCompleteToolSetupSteps() {
   steps.push_back({L"ASAP7 CDL models", BuildAsap7ModelRequest(true),
                    OutputEncoding::kUtf8, false});
   return steps;
+}
+
+std::vector<SetupStep> BuildBuildCacheCleanupSteps() {
+  WslCommand cleanup;
+  cleanup.program = L"/bin/bash";
+  cleanup.arguments = {
+      L"-c",
+      L"set -eu; toolchains=\"$HOME/.designpp/toolchains\"; "
+      L"if [ ! -d \"$toolchains\" ]; then "
+      L"echo 'No Design++ build candidates to remove.'; exit 0; fi; "
+      L"command -v flock >/dev/null 2>&1 || { "
+      L"echo 'Cache cleanup requires flock.' >&2; exit 69; }; "
+      L"exec 8>\"$toolchains/.openlane-install.lock\"; "
+      L"flock -n 8 || { "
+      L"echo 'OpenLane installation is running; cleanup skipped.' >&2; "
+      L"exit 73; }; "
+      L"exec 9>\"$toolchains/.orfs-install.lock\"; "
+      L"flock -n 9 || { "
+      L"echo 'ORFS installation is running; cleanup skipped.' >&2; "
+      L"exit 73; }; " +
+          std::wstring(kCandidateCleanupScript) +
+          L"failed=0; cleanup_candidates openlane openlane2 "
+          L"https://github.com/efabless/openlane2.git || failed=1; "
+          L"cleanup_candidates orfs orfs "
+          L"https://github.com/The-OpenROAD-Project/"
+          L"OpenROAD-flow-scripts || failed=1; "
+          L"if [ \"$failed\" -eq 0 ]; then "
+          L"echo 'Design++ abandoned build candidates cleaned.'; fi; "
+          L"exit \"$failed\""};
+  return {{L"Design++ 빌드 캐시 정리", WslExecutor::BuildRequest(cleanup),
+           OutputEncoding::kUtf8, false}};
 }
 
 std::vector<SetupStep> BuildCompleteToolRemoveSteps() {
@@ -452,7 +721,8 @@ echo "ASAP7 CDL models prepared: $destination (LVS recipe not yet validated)"
   return WslExecutor::BuildRequest(command);
 }
 
-std::vector<SetupStep> BuildToolInstallSteps(ToolId tool_id) {
+std::vector<SetupStep> BuildToolInstallSteps(
+    ToolId tool_id, OrfsBuildPolicy orfs_build_policy) {
   if (tool_id == ToolId::kAsap7Models) {
     return {{L"ASAP7 CDL models", BuildAsap7ModelRequest(true),
              OutputEncoding::kUtf8, false}};
@@ -483,7 +753,8 @@ std::vector<SetupStep> BuildToolInstallSteps(ToolId tool_id) {
              OutputEncoding::kUtf8, false}};
   }
 
-  std::vector<SetupStep> complete = BuildCompleteToolSetupSteps();
+  std::vector<SetupStep> complete =
+      BuildCompleteToolSetupSteps(orfs_build_policy);
   if (tool_id == ToolId::kNix) {
     return {std::move(complete[3])};
   }
