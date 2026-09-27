@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "Resource.h"
+#include "designpp/gui/about_window.h"
 
 namespace designpp::gui {
 namespace {
@@ -539,10 +540,7 @@ LRESULT LibraryManagerWindow::HandleMessage(UINT message, WPARAM wparam,
           SendMessageW(window_, WM_CLOSE, 0, 0);
           return 0;
         case IDM_ABOUT:
-          MessageBoxW(window_,
-                      L"Design++ Library Manager\nWin32 EDA Flow "
-                      L"Orchestrator\nWSL2 Backend",
-                      L"Design++ 정보", MB_OK | MB_ICONINFORMATION);
+          ShowAboutWindow(instance_, window_);
           return 0;
         default:
           break;

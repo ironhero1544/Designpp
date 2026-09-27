@@ -315,6 +315,7 @@
     <ClCompile Include="src\adapters\toolchain_compatibility_probe.cc" />
     <ClCompile Include="src\gui\dpi.cc" />
     <ClCompile Include="src\gui\library_manager_window.cc" />
+    <ClCompile Include="src\gui\about_window.cc" />
     <ClCompile Include="src\gui\liberty_window.cc" />
     <ClCompile Include="src\gui\monaco_editor_host.cc" />
     <ClCompile Include="src\gui\constraints_window.cc" />
